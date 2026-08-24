@@ -1,5 +1,6 @@
+from typing import Any, Dict, Optional
+
 import requests
-from typing import Optional, Dict, Any
 
 
 class MemoryBridgeClient:
@@ -39,7 +40,7 @@ class MemoryBridgeClient:
     def recall(
         self,
         user_token: str,
-        session_token: Optional[str] = None,
+        session_token: str,
     ) -> Dict[str, Any]:
         resp = requests.post(
             f"{self.base_url}/v1/memory/recall",
