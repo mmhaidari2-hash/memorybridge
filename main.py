@@ -1,7 +1,8 @@
 from fastapi import Depends, FastAPI, Response
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
-from app.database import engine
+from app.database import get_db
 from app.http_security import SecurityHeadersMiddleware
 from app.service_auth import verify_service_api_key
 from routers import auth
@@ -34,10 +35,9 @@ def health():
 
 
 @app.get("/ready")
-def readiness(response: Response):
+def readiness(response: Response, db: Session = Depends(get_db)):
     try:
-        with engine.connect() as connection:
-            connection.execute(text("SELECT 1"))
+        db.execute(text("SELECT 1"))
     except Exception:
         response.status_code = 503
         return {"status": "not_ready"}
