@@ -20,7 +20,7 @@ os.environ.setdefault(
 os.environ.setdefault("SERVICE_API_KEYS", LEGACY_KEY)
 
 from app.database import Base, get_db
-from app.models import ApiKey, Tenant, User, Workspace
+from app.models import ApiKey, Tenant, UsageEvent, User, Workspace
 from app.service_auth import get_legacy_service_key_hashes
 from main import app
 
@@ -133,6 +133,7 @@ def test_legacy_environment_key_still_works_during_transition():
     with TestingSessionLocal() as db:
         user = db.query(User).one()
         assert user.workspace_id is None
+        assert db.query(UsageEvent).count() == 0
 
 
 def test_workspace_b_cannot_recall_or_update_workspace_a_memory_even_with_tokens():
@@ -190,3 +191,54 @@ def test_workspace_b_cannot_recall_or_update_workspace_a_memory_even_with_tokens
     )
     assert verify_unchanged.status_code == 200
     assert verify_unchanged.json()["summary"] == "Tenant A private memory"
+
+
+def test_workspace_usage_events_are_recorded_for_successful_operations_only():
+    reset_database()
+    tenant_id, workspace_id, _ = seed_database_key()
+    headers = {"X-MemoryBridge-Key": DB_KEY}
+
+    created = client.post("/v1/auth/token", json={"full_name": "Metered User"}, headers=headers)
+    assert created.status_code == 201
+    user_token = created.json()["user_token"]
+
+    stored = client.post(
+        "/v1/memory/store",
+        json={"user_token": user_token, "summary": "meter me"},
+        headers=headers,
+    )
+    assert stored.status_code == 201
+    session_token = stored.json()["session_token"]
+
+    recalled = client.post(
+        "/v1/memory/recall",
+        json={"user_token": user_token, "session_token": session_token},
+        headers=headers,
+    )
+    assert recalled.status_code == 200
+
+    updated = client.put(
+        "/v1/memory/update",
+        json={"user_token": user_token, "session_token": session_token, "stage": "done"},
+        headers=headers,
+    )
+    assert updated.status_code == 200
+
+    failed = client.post(
+        "/v1/memory/recall",
+        json={"user_token": "mb_invalid", "session_token": session_token},
+        headers=headers,
+    )
+    assert failed.status_code == 401
+
+    with TestingSessionLocal() as db:
+        events = db.query(UsageEvent).order_by(UsageEvent.created_at.asc()).all()
+        assert [event.event_type for event in events] == [
+            "user.create",
+            "memory.store",
+            "memory.recall",
+            "memory.update",
+        ]
+        assert all(event.quantity == 1 for event in events)
+        assert all(event.workspace_id == workspace_id for event in events)
+        assert all(event.tenant_id == tenant_id for event in events)
