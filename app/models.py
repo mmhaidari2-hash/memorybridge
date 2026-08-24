@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -31,6 +31,23 @@ class Workspace(Base):
 
     tenant = relationship("Tenant", back_populates="workspaces")
     users = relationship("User", back_populates="workspace", cascade="all, delete-orphan")
+    api_keys = relationship("ApiKey", back_populates="workspace", cascade="all, delete-orphan")
+
+
+class ApiKey(Base):
+    __tablename__ = "api_keys"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    workspace_id = Column(String, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    key_prefix = Column(String(16), nullable=False, index=True)
+    key_hash = Column(String(64), unique=True, nullable=False, index=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_used_at = Column(DateTime, nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+
+    workspace = relationship("Workspace", back_populates="api_keys")
 
 
 class User(Base):
