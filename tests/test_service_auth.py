@@ -46,9 +46,11 @@ client = TestClient(app)
 
 
 def reset_database():
+    app.dependency_overrides[get_db] = override_get_db
+    os.environ["SERVICE_API_KEYS"] = LEGACY_KEY
+    get_legacy_service_key_hashes.cache_clear()
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
-    get_legacy_service_key_hashes.cache_clear()
 
 
 def seed_database_key(*, key=DB_KEY, tenant_name="Test Tenant", workspace_slug="default", tenant_status="active", key_active=True):
