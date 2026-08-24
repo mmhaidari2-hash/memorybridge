@@ -226,9 +226,11 @@ def test_workspace_usage_events_are_recorded_for_successful_operations_only():
     )
     assert updated.status_code == 200
 
+    # Use a syntactically valid but unknown token so the request reaches
+    # authentication/ownership logic instead of failing schema validation.
     failed = client.post(
         "/v1/memory/recall",
-        json={"user_token": "mb_invalid", "session_token": session_token},
+        json={"user_token": "mb_invalid_token_1234567890", "session_token": session_token},
         headers=headers,
     )
     assert failed.status_code == 401
