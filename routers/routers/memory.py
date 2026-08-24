@@ -8,6 +8,7 @@ from app.models import MemoryRecord, User
 from app.schemas import MemoryRecall, MemoryResponse, MemoryStore, MemoryUpdate
 from app.security import decrypt_text, encrypt_text, hash_token
 from app.service_auth import ServiceAuthContext, verify_service_api_key
+from app.usage import record_usage
 
 router = APIRouter(tags=["Memory"])
 
@@ -55,6 +56,7 @@ def store_memory(
         encrypted_content=encrypt_text(payload.summary),
     )
     db.add(record)
+    record_usage(db, auth, "memory.store")
     db.commit()
 
     return MemoryResponse(
@@ -72,11 +74,14 @@ def recall_memory(
 ):
     user = get_user(db, payload.user_token, auth)
     record = get_memory(db, user, payload.session_token)
+    summary = decrypt_text(record.encrypted_content)
+    record_usage(db, auth, "memory.recall")
+    db.commit()
 
     return MemoryResponse(
         session_token=payload.session_token,
         stage=record.stage,
-        summary=decrypt_text(record.encrypted_content),
+        summary=summary,
     )
 
 
@@ -94,6 +99,7 @@ def update_memory(
     if payload.stage is not None:
         record.stage = payload.stage
 
+    record_usage(db, auth, "memory.update")
     db.commit()
     db.refresh(record)
 
