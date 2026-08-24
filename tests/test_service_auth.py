@@ -21,6 +21,7 @@ os.environ.setdefault("SERVICE_API_KEYS", LEGACY_KEY)
 
 from app.database import Base, get_db
 from app.models import ApiKey, Tenant, UsageEvent, User, Workspace
+from app.quota import PLAN_MONTHLY_EVENT_LIMITS
 from app.service_auth import get_legacy_service_key_hashes
 from main import app
 
@@ -53,10 +54,10 @@ def reset_database():
     Base.metadata.create_all(bind=engine)
 
 
-def seed_database_key(*, key=DB_KEY, tenant_name="Test Tenant", workspace_slug="default", tenant_status="active", key_active=True):
+def seed_database_key(*, key=DB_KEY, tenant_name="Test Tenant", workspace_slug="default", tenant_status="active", key_active=True, plan="free"):
     key_hash = hashlib.sha256(key.encode("utf-8")).hexdigest()
     with TestingSessionLocal() as db:
-        tenant = Tenant(name=tenant_name, status=tenant_status)
+        tenant = Tenant(name=tenant_name, status=tenant_status, plan=plan)
         workspace = Workspace(name=workspace_slug.title(), slug=workspace_slug, tenant=tenant)
         api_key = ApiKey(
             workspace=workspace,
@@ -226,8 +227,6 @@ def test_workspace_usage_events_are_recorded_for_successful_operations_only():
     )
     assert updated.status_code == 200
 
-    # Use a syntactically valid but unknown token so the request reaches
-    # authentication/ownership logic instead of failing schema validation.
     failed = client.post(
         "/v1/memory/recall",
         json={"user_token": "mb_invalid_token_1234567890", "session_token": session_token},
@@ -246,3 +245,53 @@ def test_workspace_usage_events_are_recorded_for_successful_operations_only():
         assert all(event.quantity == 1 for event in events)
         assert all(event.workspace_id == workspace_id for event in events)
         assert all(event.tenant_id == tenant_id for event in events)
+
+
+def test_free_plan_allows_last_event_then_rejects_next_without_metering_it():
+    reset_database()
+    tenant_id, workspace_id, _ = seed_database_key(plan="free")
+    limit = PLAN_MONTHLY_EVENT_LIMITS["free"]
+
+    with TestingSessionLocal() as db:
+        db.add(UsageEvent(tenant_id=tenant_id, workspace_id=workspace_id, event_type="seed", quantity=limit - 1))
+        db.commit()
+
+    headers = {"X-MemoryBridge-Key": DB_KEY}
+    last_allowed = client.post("/v1/auth/token", json={"full_name": "Last Free User"}, headers=headers)
+    assert last_allowed.status_code == 201
+
+    rejected = client.post("/v1/auth/token", json={"full_name": "Over Quota"}, headers=headers)
+    assert rejected.status_code == 429
+    detail = rejected.json()["detail"]
+    assert detail["code"] == "monthly_quota_exceeded"
+    assert detail["plan"] == "free"
+    assert detail["limit"] == limit
+    assert detail["used"] == limit
+
+    with TestingSessionLocal() as db:
+        total = db.query(UsageEvent).filter(UsageEvent.tenant_id == tenant_id).count()
+        quantity = sum(event.quantity for event in db.query(UsageEvent).filter(UsageEvent.tenant_id == tenant_id).all())
+        assert total == 2
+        assert quantity == limit
+        assert db.query(User).count() == 1
+
+
+def test_pro_plan_accepts_usage_above_free_limit():
+    reset_database()
+    tenant_id, workspace_id, _ = seed_database_key(plan="pro")
+    free_limit = PLAN_MONTHLY_EVENT_LIMITS["free"]
+
+    with TestingSessionLocal() as db:
+        db.add(UsageEvent(tenant_id=tenant_id, workspace_id=workspace_id, event_type="seed", quantity=free_limit))
+        db.commit()
+
+    response = client.post(
+        "/v1/auth/token",
+        json={"full_name": "Paid User"},
+        headers={"X-MemoryBridge-Key": DB_KEY},
+    )
+    assert response.status_code == 201
+
+    with TestingSessionLocal() as db:
+        quantity = sum(event.quantity for event in db.query(UsageEvent).filter(UsageEvent.tenant_id == tenant_id).all())
+        assert quantity == free_limit + 1
