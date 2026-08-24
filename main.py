@@ -1,10 +1,9 @@
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.database import engine, Base
 from routers import auth, memory
-Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="MemoryBridge API", version="1.0.0")
+app = FastAPI(title="Memory Bridge API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -14,9 +13,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(auth.router, prefix="/v1")
-app.include_router(memory.router, prefix="/v1")
+app.include_router(auth.router)
+app.include_router(memory.router)
 
-@app.get("/v1/memory/status")
-def status():
-    return {"status": "ok", "service": "MemoryBridge"}
+@app.get("/")
+def read_root():
+    return {"status": "ok", "message": "Memory Bridge API is running"}
