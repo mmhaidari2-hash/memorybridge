@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.http_security import SecurityHeadersMiddleware
 from app.observability import RequestLoggingMiddleware
-from routers import auth
+from routers import api_keys, auth
 from routers.routers import memory
 
 app = FastAPI(
@@ -18,6 +18,7 @@ app.add_middleware(RequestLoggingMiddleware)
 
 app.include_router(auth.router, prefix="/v1")
 app.include_router(memory.router, prefix="/v1")
+app.include_router(api_keys.router, prefix="/v1")
 
 
 @app.get("/")
