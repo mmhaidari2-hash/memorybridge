@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import User
+from app.quota import enforce_quota
 from app.schemas import TokenCreate, TokenResponse
 from app.security import hash_token
 from app.service_auth import ServiceAuthContext, verify_service_api_key
@@ -19,6 +20,8 @@ def create_token(
     db: Session = Depends(get_db),
     auth: ServiceAuthContext = Depends(verify_service_api_key),
 ):
+    enforce_quota(db, auth)
+
     # The plaintext token is returned once to the caller and is never stored.
     user_token = f"mb_{secrets.token_urlsafe(32)}"
     db_user = User(
