@@ -1,7 +1,6 @@
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers import auth, memory
+from routers import auth
 
 app = FastAPI(title="Memory Bridge API")
 
@@ -14,7 +13,6 @@ app.add_middleware(
 )
 
 app.include_router(auth.router)
-app.include_router(memory.router)
 
 @app.get("/")
 def read_root():
