@@ -8,6 +8,7 @@ from app.models import User
 from app.schemas import TokenCreate, TokenResponse
 from app.security import hash_token
 from app.service_auth import ServiceAuthContext, verify_service_api_key
+from app.usage import record_usage
 
 router = APIRouter(tags=["Auth"])
 
@@ -26,6 +27,7 @@ def create_token(
         full_name=payload.full_name,
     )
     db.add(db_user)
+    record_usage(db, auth, "user.create")
     db.commit()
 
     return TokenResponse(user_token=user_token, full_name=db_user.full_name)
