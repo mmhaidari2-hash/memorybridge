@@ -6,6 +6,8 @@ from typing import FrozenSet
 
 from fastapi import Header, HTTPException
 
+from app.rate_limit import rate_limiter
+
 
 @lru_cache(maxsize=1)
 def get_service_key_hashes() -> FrozenSet[str]:
@@ -17,7 +19,7 @@ def get_service_key_hashes() -> FrozenSet[str]:
     return frozenset(hashlib.sha256(key.encode("utf-8")).hexdigest() for key in keys)
 
 
-def verify_service_api_key(x_memorybridge_key: str | None = Header(default=None)) -> None:
+def verify_service_api_key(x_memorybridge_key: str | None = Header(default=None)) -> str:
     if not x_memorybridge_key:
         raise HTTPException(status_code=401, detail="Missing service API key")
 
@@ -28,3 +30,6 @@ def verify_service_api_key(x_memorybridge_key: str | None = Header(default=None)
     )
     if not valid:
         raise HTTPException(status_code=401, detail="Invalid service API key")
+
+    rate_limiter.check(supplied_hash)
+    return supplied_hash
