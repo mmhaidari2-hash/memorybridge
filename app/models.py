@@ -32,6 +32,7 @@ class Workspace(Base):
     tenant = relationship("Tenant", back_populates="workspaces")
     users = relationship("User", back_populates="workspace", cascade="all, delete-orphan")
     api_keys = relationship("ApiKey", back_populates="workspace", cascade="all, delete-orphan")
+    usage_events = relationship("UsageEvent", back_populates="workspace", cascade="all, delete-orphan")
 
 
 class ApiKey(Base):
@@ -48,6 +49,17 @@ class ApiKey(Base):
     revoked_at = Column(DateTime, nullable=True)
 
     workspace = relationship("Workspace", back_populates="api_keys")
+
+
+class UsageEvent(Base):
+    __tablename__ = "usage_events"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    workspace_id = Column(String, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    event_type = Column(String(64), nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    workspace = relationship("Workspace", back_populates="usage_events")
 
 
 class User(Base):
