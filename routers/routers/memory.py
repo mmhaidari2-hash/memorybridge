@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import MemoryRecord, User
+from app.quota import enforce_quota
 from app.schemas import MemoryRecall, MemoryResponse, MemoryStore, MemoryUpdate
 from app.security import decrypt_text, encrypt_text, hash_token
 from app.service_auth import ServiceAuthContext, verify_service_api_key
@@ -47,6 +48,7 @@ def store_memory(
     auth: ServiceAuthContext = Depends(verify_service_api_key),
 ):
     user = get_user(db, payload.user_token, auth)
+    enforce_quota(db, auth)
     session_token = payload.session_token or f"sess_{secrets.token_urlsafe(24)}"
 
     record = MemoryRecord(
@@ -74,6 +76,7 @@ def recall_memory(
 ):
     user = get_user(db, payload.user_token, auth)
     record = get_memory(db, user, payload.session_token)
+    enforce_quota(db, auth)
     summary = decrypt_text(record.encrypted_content)
     record_usage(db, auth, "memory.recall")
     db.commit()
@@ -93,6 +96,7 @@ def update_memory(
 ):
     user = get_user(db, payload.user_token, auth)
     record = get_memory(db, user, payload.session_token)
+    enforce_quota(db, auth)
 
     if payload.summary is not None:
         record.encrypted_content = encrypt_text(payload.summary)
