@@ -1,9 +1,10 @@
-from pydantic import BaseModel
 from typing import Optional
+
+from pydantic import BaseModel, Field
 
 
 class TokenCreate(BaseModel):
-    full_name: Optional[str] = None
+    full_name: Optional[str] = Field(default=None, max_length=200)
 
 
 class TokenResponse(BaseModel):
@@ -12,22 +13,22 @@ class TokenResponse(BaseModel):
 
 
 class MemoryStore(BaseModel):
-    user_token: str
-    session_token: Optional[str] = None
-    stage: Optional[str] = None
-    summary: str
+    user_token: str = Field(min_length=16, max_length=256)
+    session_token: Optional[str] = Field(default=None, min_length=16, max_length=256)
+    stage: Optional[str] = Field(default=None, max_length=100)
+    summary: str = Field(min_length=1, max_length=100_000)
 
 
 class MemoryRecall(BaseModel):
-    user_token: str
-    session_token: Optional[str] = None
+    user_token: str = Field(min_length=16, max_length=256)
+    session_token: str = Field(min_length=16, max_length=256)
 
 
 class MemoryUpdate(BaseModel):
-    user_token: str
-    session_token: str
-    stage: Optional[str] = None
-    summary: Optional[str] = None
+    user_token: str = Field(min_length=16, max_length=256)
+    session_token: str = Field(min_length=16, max_length=256)
+    stage: Optional[str] = Field(default=None, max_length=100)
+    summary: Optional[str] = Field(default=None, min_length=1, max_length=100_000)
 
 
 class MemoryResponse(BaseModel):
