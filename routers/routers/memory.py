@@ -14,7 +14,6 @@ router = APIRouter(tags=["Memory"])
 def get_user(db: Session, user_token: str) -> User:
     user = db.query(User).filter(User.user_token_hash == hash_token(user_token)).first()
     if not user:
-        # Authentication failures should not disclose whether an account exists.
         raise HTTPException(status_code=401, detail="Invalid credentials")
     return user
 
@@ -47,7 +46,6 @@ def store_memory(payload: MemoryStore, db: Session = Depends(get_db)):
     db.add(record)
     db.commit()
 
-    # Plaintext credentials are returned to the caller but never persisted.
     return MemoryResponse(
         session_token=session_token,
         stage=record.stage,
@@ -58,28 +56,10 @@ def store_memory(payload: MemoryStore, db: Session = Depends(get_db)):
 @router.post("/memory/recall", response_model=MemoryResponse)
 def recall_memory(payload: MemoryRecall, db: Session = Depends(get_db)):
     user = get_user(db, payload.user_token)
-
-    if payload.session_token:
-        record = get_memory(db, user, payload.session_token)
-        response_session_token = payload.session_token
-    else:
-        record = (
-            db.query(MemoryRecord)
-            .filter(MemoryRecord.user_id == user.id)
-            .order_by(MemoryRecord.created_at.desc())
-            .first()
-        )
-        if not record:
-            raise HTTPException(status_code=404, detail="No memory record found")
-        # Session tokens are intentionally non-recoverable from their hashes.
-        # Require the caller to provide a session token when it needs that token echoed back.
-        raise HTTPException(
-            status_code=400,
-            detail="session_token is required for secure recall",
-        )
+    record = get_memory(db, user, payload.session_token)
 
     return MemoryResponse(
-        session_token=response_session_token,
+        session_token=payload.session_token,
         stage=record.stage,
         summary=decrypt_text(record.encrypted_content),
     )
