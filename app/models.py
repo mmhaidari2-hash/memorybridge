@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -17,6 +17,7 @@ class Tenant(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     workspaces = relationship("Workspace", back_populates="tenant", cascade="all, delete-orphan")
+    usage_events = relationship("UsageEvent", back_populates="tenant", cascade="all, delete-orphan")
 
 
 class Workspace(Base):
@@ -55,10 +56,13 @@ class UsageEvent(Base):
     __tablename__ = "usage_events"
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(String, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
     workspace_id = Column(String, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
     event_type = Column(String(64), nullable=False, index=True)
+    quantity = Column(Integer, nullable=False, default=1)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
+    tenant = relationship("Tenant", back_populates="usage_events")
     workspace = relationship("Workspace", back_populates="usage_events")
 
 
