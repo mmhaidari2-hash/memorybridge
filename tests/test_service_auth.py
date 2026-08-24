@@ -10,6 +10,7 @@ from sqlalchemy.pool import StaticPool
 
 LEGACY_KEY = "mbs_legacy_test_key_abcdefghijklmnopqrstuvwxyz"
 DB_KEY = "mbs_database_test_key_abcdefghijklmnopqrstuvwxyz"
+DB_KEY_B = "mbs_database_test_key_b_bcdefghijklmnopqrstuvwxyz"
 
 os.environ.setdefault("DATABASE_URL", "sqlite://")
 os.environ.setdefault(
@@ -19,7 +20,7 @@ os.environ.setdefault(
 os.environ.setdefault("SERVICE_API_KEYS", LEGACY_KEY)
 
 from app.database import Base, get_db
-from app.models import ApiKey, Tenant, Workspace
+from app.models import ApiKey, Tenant, User, Workspace
 from app.service_auth import get_legacy_service_key_hashes
 from main import app
 
@@ -50,15 +51,15 @@ def reset_database():
     get_legacy_service_key_hashes.cache_clear()
 
 
-def seed_database_key(*, tenant_status="active", key_active=True):
-    key_hash = hashlib.sha256(DB_KEY.encode("utf-8")).hexdigest()
+def seed_database_key(*, key=DB_KEY, tenant_name="Test Tenant", workspace_slug="default", tenant_status="active", key_active=True):
+    key_hash = hashlib.sha256(key.encode("utf-8")).hexdigest()
     with TestingSessionLocal() as db:
-        tenant = Tenant(name="Test Tenant", status=tenant_status)
-        workspace = Workspace(name="Default", slug="default", tenant=tenant)
+        tenant = Tenant(name=tenant_name, status=tenant_status)
+        workspace = Workspace(name=workspace_slug.title(), slug=workspace_slug, tenant=tenant)
         api_key = ApiKey(
             workspace=workspace,
             name="Test key",
-            key_prefix=DB_KEY[:12],
+            key_prefix=key[:12],
             key_hash=key_hash,
             is_active=key_active,
         )
@@ -69,7 +70,7 @@ def seed_database_key(*, tenant_status="active", key_active=True):
 
 def test_database_key_authenticates_and_updates_last_used_at():
     reset_database()
-    _, _, api_key_id = seed_database_key()
+    _, workspace_id, api_key_id = seed_database_key()
 
     response = client.post(
         "/v1/auth/token",
@@ -80,7 +81,9 @@ def test_database_key_authenticates_and_updates_last_used_at():
     assert response.status_code == 201
     with TestingSessionLocal() as db:
         api_key = db.get(ApiKey, api_key_id)
+        user = db.query(User).one()
         assert isinstance(api_key.last_used_at, datetime)
+        assert user.workspace_id == workspace_id
 
 
 def test_revoked_database_key_is_rejected():
@@ -127,3 +130,63 @@ def test_legacy_environment_key_still_works_during_transition():
     )
 
     assert response.status_code == 201
+    with TestingSessionLocal() as db:
+        user = db.query(User).one()
+        assert user.workspace_id is None
+
+
+def test_workspace_b_cannot_recall_or_update_workspace_a_memory_even_with_tokens():
+    reset_database()
+    seed_database_key(key=DB_KEY, tenant_name="Tenant A", workspace_slug="alpha")
+    seed_database_key(key=DB_KEY_B, tenant_name="Tenant B", workspace_slug="beta")
+
+    headers_a = {"X-MemoryBridge-Key": DB_KEY}
+    headers_b = {"X-MemoryBridge-Key": DB_KEY_B}
+
+    create_a = client.post("/v1/auth/token", json={"full_name": "User A"}, headers=headers_a)
+    assert create_a.status_code == 201
+    user_token_a = create_a.json()["user_token"]
+
+    store_a = client.post(
+        "/v1/memory/store",
+        json={"user_token": user_token_a, "summary": "Tenant A private memory"},
+        headers=headers_a,
+    )
+    assert store_a.status_code == 201
+    session_token_a = store_a.json()["session_token"]
+
+    own_recall = client.post(
+        "/v1/memory/recall",
+        json={"user_token": user_token_a, "session_token": session_token_a},
+        headers=headers_a,
+    )
+    assert own_recall.status_code == 200
+    assert own_recall.json()["summary"] == "Tenant A private memory"
+
+    cross_recall = client.post(
+        "/v1/memory/recall",
+        json={"user_token": user_token_a, "session_token": session_token_a},
+        headers=headers_b,
+    )
+    assert cross_recall.status_code == 401
+    assert cross_recall.json()["detail"] == "Invalid credentials"
+
+    cross_update = client.put(
+        "/v1/memory/update",
+        json={
+            "user_token": user_token_a,
+            "session_token": session_token_a,
+            "summary": "Compromised",
+        },
+        headers=headers_b,
+    )
+    assert cross_update.status_code == 401
+    assert cross_update.json()["detail"] == "Invalid credentials"
+
+    verify_unchanged = client.post(
+        "/v1/memory/recall",
+        json={"user_token": user_token_a, "session_token": session_token_a},
+        headers=headers_a,
+    )
+    assert verify_unchanged.status_code == 200
+    assert verify_unchanged.json()["summary"] == "Tenant A private memory"
