@@ -1,5 +1,6 @@
 import base64
 import binascii
+import hashlib
 import os
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -19,6 +20,12 @@ def get_aes_key() -> bytes:
         raise RuntimeError("ENCRYPTION_KEY must decode to exactly 32 bytes")
 
     return key
+
+
+def hash_token(token: str) -> str:
+    if not token:
+        raise ValueError("Token must not be empty")
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def encrypt_text(plain_text: str) -> str:
