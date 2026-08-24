@@ -11,6 +11,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
+      PYTHONPATH: .
       DATABASE_URL: postgresql://memorybridge:memorybridge@localhost:5432/memorybridge
       ENCRYPTION_KEY: eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHg=
 
