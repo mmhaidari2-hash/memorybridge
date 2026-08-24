@@ -48,16 +48,33 @@ def reset_database():
     Base.metadata.create_all(bind=engine)
 
 
-def test_health_is_public():
+def assert_security_headers(response):
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert response.headers["permissions-policy"] == "camera=(), microphone=(), geolocation=()"
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_health_is_public_and_has_security_headers():
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+    assert_security_headers(response)
+
+
+def test_readiness_checks_database_and_has_security_headers():
+    response = client.get("/ready")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ready"}
+    assert_security_headers(response)
 
 
 def test_v1_requires_service_api_key():
     response = client.post("/v1/auth/token", json={"full_name": "Blocked"})
     assert response.status_code == 401
     assert response.json()["detail"] == "Missing service API key"
+    assert_security_headers(response)
 
 
 def test_v1_rejects_invalid_service_api_key():
