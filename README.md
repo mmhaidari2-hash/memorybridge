@@ -1,192 +1,244 @@
 # MemoryBridge
 
-MemoryBridge is a lightweight, self-hosted persistence service for storing encrypted AI application memory.
+MemoryBridge is a secure persistence API for AI applications that need durable user and session memory without storing memory summaries as plaintext in the database.
 
-It is designed for LLM wrappers, agents, assistants, and other applications that need durable user/session context without storing memory summaries as plaintext in the database.
+It is built for LLM applications, agents, assistants, and developer products that need a small, auditable memory layer with workspace isolation, API-key authentication, usage metering, plan quotas, and subscription-billing foundations.
 
-## Current status
+## v0.4 commercial foundation
 
-MemoryBridge v0.3 is in production-hardening review. The secure foundation from v0.2 is now extended with service-level API authentication, per-key rate limiting, readiness checks, security headers, privacy-safe request logging, and a hardened container runtime.
+The current development branch adds the commercial control plane on top of the hardened memory API:
+
+- tenant and workspace isolation;
+- database-backed workspace API keys with revocation;
+- usage-event metering;
+- Free / Pro / Team quota enforcement;
+- account/usage status API;
+- Stripe Checkout and signed webhook foundations;
+- webhook-driven subscription entitlement with idempotency;
+- Python client helpers for memory, account, key management, and checkout.
+
+Stripe billing remains in Test Mode until the sandbox release gate in `docs/STRIPE_SANDBOX_RUNBOOK.md` is completed. A successful browser redirect never grants a paid plan; only a verified subscription webhook can change entitlement.
 
 ## Security model
 
 - Memory summaries are encrypted with AES-256-GCM before database storage.
-- `user_token` and `session_token` values are not stored in plaintext; SHA-256 digests are stored for lookup.
-- Each memory record belongs to an internal user ID, reducing accidental cross-user access paths.
-- `ENCRYPTION_KEY`, `DATABASE_URL`, and `SERVICE_API_KEYS` are mandatory runtime configuration where applicable. Security-sensitive configuration fails closed.
-- All `/v1` routes require a valid service API key in `X-MemoryBridge-Key`.
-- Authenticated service keys are rate-limited independently.
-- Memory recall/update additionally require the correct user and session credentials.
+- User and session tokens are stored as SHA-256 digests rather than plaintext.
+- Workspace API keys are stored as hashes; newly generated plaintext keys are returned only at creation time.
+- Memory access is scoped to the authenticated workspace and user/session credentials.
+- Security-sensitive runtime configuration fails closed.
 - Request logging excludes request bodies, query strings, API keys, user/session tokens, and memory content.
+- Stripe webhook signatures are verified before subscription state is trusted.
+- Duplicate billing events are processed idempotently.
 
-### Important terminology
+MemoryBridge is **not currently a zero-knowledge or end-to-end encrypted system**. The server receives plaintext memory content and has access to the encryption key in order to encrypt and decrypt it.
 
-MemoryBridge is **not currently a zero-knowledge system**. The server receives the plaintext summary and has access to the encryption key in order to encrypt/decrypt memory. A future client-side encryption mode could provide a different trust model.
+## Five-minute developer path
 
-## API
+The hosted customer flow will provision a workspace API key. For local/self-hosted development, configure the service first using `.env.example`, run migrations, and start the API.
 
-Base version prefix: `/v1`
-
-- `POST /v1/auth/token` — create a user credential
-- `POST /v1/memory/store` — store an encrypted memory and receive a session token
-- `POST /v1/memory/recall` — recall one session using user + session credentials
-- `PUT /v1/memory/update` — update one session
-- `GET /health` — liveness check
-- `GET /ready` — database readiness check
-
-All `/v1` requests must include:
-
-```text
-X-MemoryBridge-Key: <service-api-key>
-```
-
-## Quick start
-
-### 1. Configure environment
-
-Copy the example file and set real values:
+### 1. Start the service
 
 ```bash
 cp .env.example .env
-```
-
-Generate a 32-byte AES key encoded as Base64:
-
-```bash
-python -c "import base64,secrets; print(base64.b64encode(secrets.token_bytes(32)).decode())"
-```
-
-Generate a service API key:
-
-```bash
-python -c "import secrets; print('mbs_' + secrets.token_urlsafe(32))"
-```
-
-Set:
-
-```text
-DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/memorybridge
-ENCRYPTION_KEY=<generated-base64-key>
-SERVICE_API_KEYS=<generated-service-api-key>
-RATE_LIMIT_REQUESTS=120
-RATE_LIMIT_WINDOW_SECONDS=60
-```
-
-Never commit production credentials or encryption keys.
-
-### 2. Install
-
-```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-### 3. Apply database migrations
-
-```bash
 alembic upgrade head
-```
-
-### 4. Run the API
-
-```bash
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-Check:
+Verify readiness:
 
 ```bash
 curl http://localhost:8000/health
 curl http://localhost:8000/ready
 ```
 
-## Python client
+Never commit production credentials, Stripe secrets, API keys, database credentials, or encryption keys.
+
+### 2. Connect with Python
 
 ```python
 from memorybridge_client import MemoryBridgeClient
 
 mb = MemoryBridgeClient(
     "http://localhost:8000",
-    service_api_key="mbs_your_service_key",
+    service_api_key="mbs_your_workspace_key",
 )
+```
 
-user = mb.create_user("Mahdi")
+### 3. Create an application user
+
+```python
+user = mb.create_user("Demo User")
 user_token = user["user_token"]
+```
 
+The user token is a credential. Store it securely; MemoryBridge stores only its digest.
+
+### 4. Store and recall memory
+
+```python
 stored = mb.store(
     user_token,
-    summary="User prefers technical documentation in Farsi.",
+    summary="The user prefers concise answers.",
     stage="onboarding",
 )
-session_token = stored["session_token"]
 
+session_token = stored["session_token"]
 memory = mb.recall(user_token, session_token)
 print(memory["summary"])
+```
 
-updated = mb.update(
+Update the same memory session when needed:
+
+```python
+mb.update(
     user_token,
     session_token,
-    summary="User prefers concise technical documentation in Farsi.",
+    summary="The user prefers concise technical answers.",
     stage="active",
 )
 ```
 
-Treat service, user, and session credentials as secrets. Losing a session token means the current secure API cannot recover that token from the database because only its hash is stored.
+### 5. Inspect plan and usage
 
-## Rate limiting
+```python
+status = mb.account_status()
+print(status["plan"])
+print(status["usage"])
+```
 
-The current limiter is process-local and keyed by authenticated service API key. Defaults are 120 requests per 60 seconds. A `429` response includes `Retry-After`.
+The server, not the SDK, is authoritative for quota enforcement.
 
-For horizontal scaling across multiple application instances, replace the process-local limiter with a distributed backend such as Redis before treating limits as globally enforced.
+## Commercial API surface
 
-## Observability
+All workspace operations authenticate with:
 
-Responses include `X-Request-ID`. Clients may supply an `X-Request-ID` for correlation, or the service generates one.
+```text
+X-MemoryBridge-Key: <workspace-api-key>
+```
 
-Request logs contain only method, path, status code, duration, and request ID. They intentionally do not log request bodies, query strings, memory summaries, API keys, user tokens, or session tokens.
+Core memory endpoints:
+
+```text
+POST /v1/auth/token
+POST /v1/memory/store
+POST /v1/memory/recall
+PUT  /v1/memory/update
+```
+
+Workspace control-plane endpoints:
+
+```text
+GET    /v1/account/status
+POST   /v1/api-keys
+GET    /v1/api-keys
+DELETE /v1/api-keys/{key_id}
+POST   /v1/billing/checkout
+```
+
+Billing webhook endpoint:
+
+```text
+POST /v1/billing/webhook
+```
+
+The webhook is provider-facing and uses Stripe signature verification rather than workspace-key authentication.
+
+## API key lifecycle
+
+Create another key for the same workspace:
+
+```python
+created = mb.create_api_key("Production")
+new_key = created["api_key"]  # returned once
+```
+
+List metadata without exposing plaintext secrets:
+
+```python
+keys = mb.list_api_keys()
+```
+
+Revoke a key:
+
+```python
+mb.revoke_api_key(created["id"])
+```
+
+A revoked key must no longer authenticate.
+
+## Upgrade flow
+
+When Stripe Test Mode is configured, an authenticated workspace can request a trusted server-side checkout:
+
+```python
+checkout = mb.create_checkout("pro")
+print(checkout["checkout_url"])
+```
+
+The caller supplies only a supported plan name. Stripe Price IDs are selected from protected server configuration, not accepted from the caller.
+
+Important entitlement rule:
+
+```text
+Checkout success redirect != paid entitlement
+Verified active/trialing subscription webhook == paid entitlement
+```
+
+Cancellation or another non-active subscription state removes paid entitlement according to the verified lifecycle event.
+
+See `docs/STRIPE_SANDBOX_RUNBOOK.md` before enabling Live Mode.
+
+## Plans and quotas
+
+The v0.4 branch currently defines Free, Pro, and Team monthly event limits in the server quota module. These are engineering defaults while pricing is being validated; they are not a permanent public pricing promise.
+
+When a tenant reaches its monthly event quota, billable operations fail with HTTP `429` and no rejected usage event is added.
+
+## Observability and operational boundaries
+
+Responses include `X-Request-ID`. Logs contain method, path, status code, duration, and request ID while intentionally excluding sensitive request data.
+
+The current request-rate limiter is process-local. Before horizontal scaling, move rate-limit state to a distributed backend such as Redis. Usage quota enforcement is backed by persisted usage events, but scaling and concurrency behavior must still be load-tested before high-volume production claims are made.
 
 ## Tests
+
+Run:
 
 ```bash
 pytest -q
 ```
 
-The suite covers encryption, credential hashing, service authentication, rate limiting, security headers, readiness, privacy-safe observability, end-to-end API flow, invalid credentials, and cross-user session isolation.
+The suite covers the core encrypted-memory flow plus service authentication, tenant/workspace isolation, usage metering, quota boundaries, API-key lifecycle, billing entitlement security, webhook idempotency, and Python client behavior.
 
-## Database changes
+## Deployment gate
 
-Schema changes are managed with Alembic. Do not mutate production tables manually when a migration should be used.
+Before accepting real money:
 
-## Deployment notes
+- apply all Alembic migrations;
+- keep secrets only in protected deployment configuration;
+- expose the service over HTTPS;
+- complete the Stripe sandbox runbook end to end;
+- prove Free -> paid -> Free lifecycle behavior on the deployed environment;
+- confirm invalid and duplicate webhooks behave safely;
+- verify quota follows entitlement changes;
+- keep CI green;
+- perform a low-risk Live Mode transaction only after the sandbox gate passes.
 
-For production deployments:
+## What MemoryBridge does not claim
 
-- use a managed PostgreSQL instance or properly secured PostgreSQL deployment;
-- store `ENCRYPTION_KEY` and service API keys in a secrets manager or protected platform environment variables;
-- terminate TLS at a trusted reverse proxy/platform and expose the API over HTTPS only;
-- rotate credentials when compromised;
-- restrict network/database access to the minimum required;
-- back up the database and separately protect the encryption key;
-- run the supplied container as its non-root user;
-- use `/health` for liveness and `/ready` for traffic readiness;
-- move rate-limit state to Redis or another distributed store before horizontal scaling.
+MemoryBridge does not currently claim zero-knowledge encryption, end-to-end encryption, compliance certification, multi-region durability, globally distributed rate limiting, enterprise SSO, or automatic encryption-key rotation. Those capabilities require explicit implementation and evidence before they should appear in product claims.
 
-## What v0.3 does not claim
+## Near-term path to market
 
-This release does not claim zero-knowledge encryption, end-to-end encryption, compliance certification, automatic key rotation, multi-region durability, distributed rate limiting, or enterprise-grade identity management. Those require explicit design and verification rather than marketing labels.
-
-## Roadmap
-
-Near-term priorities after v0.3 production hardening:
-
-1. structured tenant/workspace isolation;
-2. durable service-account/API-key records with revocation and rotation;
-3. distributed rate limiting and usage metering;
-4. encryption-key rotation/versioning;
-5. audit events and operational metrics;
-6. packaging and SDK ergonomics;
-7. hosted deployment and commercial billing foundations.
+1. Pass deployed Stripe Test Mode end-to-end.
+2. Finish the customer dashboard and self-serve onboarding surface.
+3. Validate the five-minute integration path with external developers.
+4. Publish clear pricing only after cost and willingness-to-pay validation.
+5. Recruit a small private beta and measure activation, repeated use, conversion, and retention.
+6. Enable Live Mode only after the commercial release gate passes.
 
 ## License
 
