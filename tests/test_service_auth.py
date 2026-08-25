@@ -205,3 +205,54 @@ def test_legacy_key_cannot_manage_workspace_keys():
     reset_database()
     assert client.post("/v1/api-keys", json={"name": "Nope"}, headers={"X-MemoryBridge-Key": LEGACY_KEY}).status_code == 403
     assert client.get("/v1/api-keys", headers={"X-MemoryBridge-Key": LEGACY_KEY}).status_code == 403
+
+
+def test_account_status_exposes_free_upgrade_state_and_usage_percent():
+    reset_database()
+    tenant_id, workspace_id, _ = seed_database_key(plan="free")
+    with TestingSessionLocal() as db:
+        db.add(UsageEvent(tenant_id=tenant_id, workspace_id=workspace_id, event_type="seed", quantity=250))
+        db.commit()
+
+    response = client.get("/v1/account/status", headers={"X-MemoryBridge-Key": DB_KEY})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["plan"] == "free"
+    assert body["can_upgrade"] is True
+    assert body["paid_entitlement_active"] is False
+    assert body["usage_used"] == 250
+    assert body["usage_limit"] == PLAN_MONTHLY_EVENT_LIMITS["free"]
+    assert body["usage_remaining"] == PLAN_MONTHLY_EVENT_LIMITS["free"] - 250
+    assert body["usage_percent"] == 25.0
+
+
+def test_account_status_marks_verified_paid_entitlement_active():
+    reset_database()
+    tenant_id, _, _ = seed_database_key(plan="pro")
+    with TestingSessionLocal() as db:
+        tenant = db.get(Tenant, tenant_id)
+        tenant.subscription_status = "active"
+        db.commit()
+
+    response = client.get("/v1/account/status", headers={"X-MemoryBridge-Key": DB_KEY})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["plan"] == "pro"
+    assert body["subscription_status"] == "active"
+    assert body["paid_entitlement_active"] is True
+    assert body["can_upgrade"] is False
+
+
+def test_account_status_does_not_treat_unverified_pro_state_as_active_paid_entitlement():
+    reset_database()
+    tenant_id, _, _ = seed_database_key(plan="pro")
+    with TestingSessionLocal() as db:
+        tenant = db.get(Tenant, tenant_id)
+        tenant.subscription_status = "canceled"
+        db.commit()
+
+    response = client.get("/v1/account/status", headers={"X-MemoryBridge-Key": DB_KEY})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["paid_entitlement_active"] is False
+    assert body["can_upgrade"] is False
