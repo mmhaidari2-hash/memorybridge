@@ -16,8 +16,32 @@ PLAN_MONTHLY_EVENT_LIMITS = {
 }
 
 
-def _month_start(now: datetime) -> datetime:
+def month_start(now: datetime | None = None) -> datetime:
+    now = now or datetime.utcnow()
     return datetime(now.year, now.month, 1)
+
+
+def get_usage_summary(db: Session, tenant: Tenant) -> dict:
+    limit = PLAN_MONTHLY_EVENT_LIMITS.get(tenant.plan)
+    if limit is None:
+        raise HTTPException(status_code=403, detail="Tenant plan is not enabled")
+
+    used = (
+        db.query(func.coalesce(func.sum(UsageEvent.quantity), 0))
+        .filter(
+            UsageEvent.tenant_id == tenant.id,
+            UsageEvent.created_at >= month_start(),
+        )
+        .scalar()
+    )
+    used = int(used or 0)
+    return {
+        "plan": tenant.plan,
+        "limit": limit,
+        "used": used,
+        "remaining": max(limit - used, 0),
+        "period_start": month_start(),
+    }
 
 
 def enforce_quota(
@@ -33,26 +57,14 @@ def enforce_quota(
     if tenant is None or tenant.status != "active":
         raise HTTPException(status_code=403, detail="Tenant is not active")
 
-    limit = PLAN_MONTHLY_EVENT_LIMITS.get(tenant.plan)
-    if limit is None:
-        raise HTTPException(status_code=403, detail="Tenant plan is not enabled")
-
-    used = (
-        db.query(func.coalesce(func.sum(UsageEvent.quantity), 0))
-        .filter(
-            UsageEvent.tenant_id == auth.tenant_id,
-            UsageEvent.created_at >= _month_start(datetime.utcnow()),
-        )
-        .scalar()
-    )
-
-    if int(used or 0) + quantity > limit:
+    summary = get_usage_summary(db, tenant)
+    if summary["used"] + quantity > summary["limit"]:
         raise HTTPException(
             status_code=429,
             detail={
                 "code": "monthly_quota_exceeded",
                 "plan": tenant.plan,
-                "limit": limit,
-                "used": int(used or 0),
+                "limit": summary["limit"],
+                "used": summary["used"],
             },
         )
