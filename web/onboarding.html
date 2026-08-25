@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>MemoryBridge — First Run</title>
+  <meta name="description" content="Connect a MemoryBridge workspace, verify account status, and continue to the customer dashboard." />
+  <style>
+    :root{--bg:#08111f;--panel:rgba(255,255,255,.055);--border:rgba(255,255,255,.12);--text:#f5f7fb;--muted:#9eabc0;--accent:#7dd3fc;--good:#86efac;--bad:#fca5a5}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at 15% 10%,rgba(125,211,252,.13),transparent 28%),linear-gradient(180deg,#08111f,#0a1424 55%,#08111f);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.wrap{width:min(960px,100%)}.brand{font-weight:800;font-size:19px;letter-spacing:-.02em;margin-bottom:24px}.brand span{color:var(--accent)}.grid{display:grid;grid-template-columns:1.05fr .95fr;gap:18px}.card{border:1px solid var(--border);border-radius:24px;background:var(--panel);padding:28px}.eyebrow{display:inline-flex;padding:7px 10px;border:1px solid var(--border);border-radius:999px;color:#cbd5e1;font-size:12px;font-weight:750}.hero h1{font-size:46px;line-height:1.02;letter-spacing:-.045em;margin:18px 0 14px}.hero p{color:var(--muted);font-size:17px;line-height:1.6}.steps{display:grid;gap:10px;margin-top:24px}.step{display:flex;gap:12px;padding:13px 14px;border:1px solid rgba(255,255,255,.09);border-radius:14px;background:rgba(255,255,255,.025)}.num{width:28px;height:28px;border-radius:9px;display:grid;place-items:center;background:rgba(125,211,252,.12);color:var(--accent);font-weight:800;flex:none}.step strong{display:block;font-size:14px}.step small{display:block;color:var(--muted);margin-top:3px;line-height:1.45}.panel h2{margin:0 0 7px;font-size:23px;letter-spacing:-.03em}.panel p{margin:0 0 18px;color:var(--muted);font-size:14px;line-height:1.55}.field{display:grid;gap:7px;margin-top:14px}.field label{font-size:12px;color:#cbd5e1}.input{min-height:46px;border-radius:13px;border:1px solid var(--border);background:rgba(255,255,255,.04);color:var(--text);padding:0 13px;outline:none}.input:focus{border-color:rgba(125,211,252,.55)}.btn{width:100%;min-height:46px;margin-top:12px;border:0;border-radius:13px;font-weight:800;cursor:pointer;background:linear-gradient(135deg,var(--accent),#bae6fd);color:#06101c}.btn.secondary{background:rgba(255,255,255,.05);color:var(--text);border:1px solid var(--border)}.btn:disabled{opacity:.55;cursor:not-allowed}.status{display:none;margin-top:14px;padding:12px 13px;border-radius:12px;font-size:13px}.status.show{display:block}.status.ok{background:rgba(134,239,172,.08);border:1px solid rgba(134,239,172,.2);color:#bbf7d0}.status.err{background:rgba(252,165,165,.08);border:1px solid rgba(252,165,165,.2);color:#fecaca}.summary{display:none;margin-top:16px;padding:15px;border:1px solid var(--border);border-radius:14px;background:rgba(255,255,255,.025)}.summary.show{display:block}.summary-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.metric{padding:10px;border-radius:12px;background:rgba(255,255,255,.03)}.metric span{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.07em}.metric strong{display:block;margin-top:5px}.micro{color:#748197;font-size:12px;line-height:1.5;margin-top:14px}.links{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:18px;font-size:12px}.links a{color:#b9c5d6;text-decoration:none}.links a:hover{color:#fff}@media(max-width:800px){.grid{grid-template-columns:1fr}.hero h1{font-size:38px}}@media(max-width:520px){body{padding:14px}.card{padding:21px}.summary-grid{grid-template-columns:1fr}.hero h1{font-size:34px}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="brand">Memory<span>Bridge</span></div>
+    <div class="grid">
+      <section class="card hero">
+        <div class="eyebrow">First run · activation path</div>
+        <h1>Get from workspace key to a working account in under a minute.</h1>
+        <p>This screen does one job: verify that your workspace is real, show your current plan and quota, then send you into the dashboard where you can create keys, watch usage, and upgrade.</p>
+        <div class="steps">
+          <div class="step"><div class="num">1</div><div><strong>Paste your workspace API key</strong><small>The key stays in this browser session only.</small></div></div>
+          <div class="step"><div class="num">2</div><div><strong>Verify account and quota</strong><small>Plan and entitlement come from the authoritative API.</small></div></div>
+          <div class="step"><div class="num">3</div><div><strong>Continue to Dashboard</strong><small>Create keys, monitor usage, and reach secure Stripe Checkout when you are ready.</small></div></div>
+        </div>
+      </section>
+
+      <section class="card panel">
+        <h2>Connect your workspace</h2>
+        <p>Use a database-backed workspace key beginning with <code>mbs_</code>. Legacy environment keys are not customer control-plane credentials.</p>
+        <div class="field">
+          <label for="apiKey">Workspace API key</label>
+          <input id="apiKey" class="input" type="password" autocomplete="off" placeholder="mbs_..." />
+        </div>
+        <button id="verifyBtn" class="btn" onclick="verifyWorkspace()">Verify workspace</button>
+        <div id="status" class="status"></div>
+
+        <div id="summary" class="summary">
+          <div class="summary-grid">
+            <div class="metric"><span>Workspace</span><strong id="workspace">—</strong></div>
+            <div class="metric"><span>Plan</span><strong id="plan">—</strong></div>
+            <div class="metric"><span>Usage</span><strong id="usage">—</strong></div>
+            <div class="metric"><span>Upgrade</span><strong id="upgrade">—</strong></div>
+          </div>
+          <button class="btn" onclick="openDashboard()">Open customer dashboard</button>
+        </div>
+
+        <button class="btn secondary" onclick="location.href='landing.html'">Back to product site</button>
+        <div class="micro">MemoryBridge never treats a success redirect as paid entitlement. Subscription access becomes active only after the verified billing webhook updates the tenant.</div>
+        <div class="links"><a href="../README.md">Developer docs</a><a href="dashboard.html">Already connected? Open dashboard</a></div>
+      </section>
+    </div>
+  </div>
+
+<script>
+  const $ = id => document.getElementById(id);
+  const state = { key: sessionStorage.getItem('mb_workspace_key') || '', account: null };
+  if (state.key) $('apiKey').value = state.key;
+
+  function show(message, type='ok') {
+    const el = $('status');
+    el.textContent = message;
+    el.className = `status show ${type}`;
+  }
+
+  async function verifyWorkspace() {
+    const key = $('apiKey').value.trim();
+    if (!key) return show('Paste your workspace API key first.', 'err');
+    const button = $('verifyBtn');
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = 'Verifying…';
+    try {
+      const response = await fetch('/v1/account/status', {headers:{'X-MemoryBridge-Key':key}});
+      const body = await response.json().catch(()=>({}));
+      if (!response.ok) {
+        const detail = typeof body.detail === 'string' ? body.detail : `HTTP ${response.status}`;
+        throw new Error(detail);
+      }
+      state.key = key;
+      state.account = body;
+      sessionStorage.setItem('mb_workspace_key', key);
+      $('workspace').textContent = body.workspace_name;
+      $('plan').textContent = String(body.plan || '').toUpperCase();
+      $('usage').textContent = `${Number(body.usage_used || 0).toLocaleString()} / ${Number(body.usage_limit || 0).toLocaleString()}`;
+      $('upgrade').textContent = body.can_upgrade ? 'Available' : (body.paid_entitlement_active ? 'Paid active' : 'Not available');
+      $('summary').classList.add('show');
+      show('Workspace verified. You are ready to continue.');
+    } catch (error) {
+      $('summary').classList.remove('show');
+      show(`Could not verify workspace: ${error.message}`, 'err');
+    } finally {
+      button.disabled = false;
+      button.textContent = original;
+    }
+  }
+
+  function openDashboard() {
+    if (!state.key) return show('Verify your workspace first.', 'err');
+    location.href = 'dashboard.html';
+  }
+
+  if (state.key) verifyWorkspace();
+</script>
+</body>
+</html>
