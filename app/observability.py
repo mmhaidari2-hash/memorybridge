@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 import uuid
 
@@ -6,13 +7,26 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
 logger = logging.getLogger("memorybridge.http")
+_SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
+
+
+def safe_request_id(candidate: str | None) -> str:
+    """Accept only bounded non-secret-shaped correlation IDs.
+
+    Request bodies, query strings, authorization headers, workspace API keys,
+    Stripe signatures, and memory content are intentionally never logged.
+    """
+    value = (candidate or "").strip()
+    if value and _SAFE_REQUEST_ID.fullmatch(value):
+        return value
+    return str(uuid.uuid4())
 
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
-    """Log request metadata without bodies, query strings, credentials, or memory content."""
+    """Log minimal request metadata without bodies, query strings or credentials."""
 
     async def dispatch(self, request: Request, call_next):
-        request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        request_id = safe_request_id(request.headers.get("X-Request-ID"))
         started = time.perf_counter()
 
         try:
