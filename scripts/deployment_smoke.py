@@ -17,6 +17,9 @@ import urllib.error
 import urllib.request
 
 
+USAGE = "Usage: python scripts/deployment_smoke.py https://api.example.com"
+
+
 def request(url: str, method: str = "GET", headers: dict[str, str] | None = None):
     req = urllib.request.Request(url, method=method, headers=headers or {})
     try:
@@ -43,8 +46,13 @@ def expect_json(url: str, expected_status: int, expected_status_value: str):
 
 
 def main() -> int:
+    if len(sys.argv) == 2 and sys.argv[1] in {"-h", "--help"}:
+        print(USAGE)
+        print("Optional: set MEMORYBRIDGE_API_KEY to verify /v1/account/status.")
+        return 0
+
     if len(sys.argv) != 2:
-        print("Usage: python scripts/deployment_smoke.py https://api.example.com", file=sys.stderr)
+        print(USAGE, file=sys.stderr)
         return 2
 
     base = sys.argv[1].rstrip("/")
