@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - v0.2-secure-foundation
+      - v0.4-commercial-foundation
   pull_request:
 
 jobs:
@@ -28,7 +29,10 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Compile Python
-        run: python -m compileall app routers main.py memorybridge_client.py
+        run: python -m compileall app routers main.py memorybridge_client.py scripts/deployment_smoke.py
+
+      - name: Validate deployment smoke CLI
+        run: python scripts/deployment_smoke.py --help
 
       - name: Run tests
         run: pytest -q
