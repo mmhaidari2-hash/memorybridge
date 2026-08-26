@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.http_security import SecurityHeadersMiddleware
 from app.observability import RequestLoggingMiddleware
+from app.runtime_validation import validate_runtime_config
 from routers import account, api_keys, auth, billing
 from routers.routers import memory
 
@@ -15,12 +16,15 @@ from routers.routers import memory
 def _cors_origins() -> list[str]:
     raw = os.getenv("CORS_ALLOWED_ORIGINS", "")
     origins = [origin.strip().rstrip("/") for origin in raw.split(",") if origin.strip()]
-    # Credentials are not used by the current web client. Still reject wildcard
-    # configuration so production access is always an explicit origin decision.
     if "*" in origins:
         raise RuntimeError("CORS_ALLOWED_ORIGINS must list explicit origins; wildcard is not allowed")
     return origins
 
+
+# Customer-facing deployments must set APP_ENV=production. In that mode the
+# process refuses to start with placeholder/missing secrets, non-HTTPS browser
+# origins/redirects, or inconsistent Stripe Test/Live configuration.
+validate_runtime_config()
 
 app = FastAPI(
     title="MemoryBridge API",
@@ -52,11 +56,7 @@ app.include_router(account.router, prefix="/v1")
 
 @app.get("/")
 def read_root():
-    return {
-        "status": "ok",
-        "service": "memorybridge",
-        "version": "0.4.0-dev",
-    }
+    return {"status": "ok", "service": "memorybridge", "version": "0.4.0-dev"}
 
 
 @app.get("/health")
@@ -71,5 +71,4 @@ def readiness(response: Response, db: Session = Depends(get_db)):
     except Exception:
         response.status_code = 503
         return {"status": "not_ready"}
-
     return {"status": "ready"}
