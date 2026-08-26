@@ -60,13 +60,13 @@ def main() -> int:
         print("Refusing non-HTTPS deployment target.", file=sys.stderr)
         return 2
 
-    print("[1/4] health")
+    print("[1/5] health")
     expect_json(f"{base}/health", 200, "ok")
 
-    print("[2/4] readiness")
+    print("[2/5] readiness")
     expect_json(f"{base}/ready", 200, "ready")
 
-    print("[3/4] root metadata")
+    print("[3/5] root metadata")
     status, _, body = request(f"{base}/")
     if status != 200:
         raise RuntimeError(f"root returned HTTP {status}")
@@ -74,7 +74,14 @@ def main() -> int:
     if root.get("service") != "memorybridge":
         raise RuntimeError(f"unexpected root payload: {root!r}")
 
-    print("[4/4] authenticated account path (optional)")
+    print("[4/5] customer web entrypoint")
+    status, _, body = request(f"{base}/app/landing.html")
+    if status != 200:
+        raise RuntimeError(f"customer landing returned HTTP {status}")
+    if "MemoryBridge" not in body or 'href="onboarding.html"' not in body:
+        raise RuntimeError("customer landing is missing expected commercial navigation")
+
+    print("[5/5] authenticated account path (optional)")
     key = os.getenv("MEMORYBRIDGE_API_KEY", "").strip()
     if key:
         status, _, body = request(
