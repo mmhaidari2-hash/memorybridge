@@ -1,4 +1,7 @@
+import os
+
 from fastapi import Depends, FastAPI, Response
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -8,11 +11,35 @@ from app.observability import RequestLoggingMiddleware
 from routers import account, api_keys, auth, billing
 from routers.routers import memory
 
+
+def _cors_origins() -> list[str]:
+    raw = os.getenv("CORS_ALLOWED_ORIGINS", "")
+    origins = [origin.strip().rstrip("/") for origin in raw.split(",") if origin.strip()]
+    # Credentials are not used by the current web client. Still reject wildcard
+    # configuration so production access is always an explicit origin decision.
+    if "*" in origins:
+        raise RuntimeError("CORS_ALLOWED_ORIGINS must list explicit origins; wildcard is not allowed")
+    return origins
+
+
 app = FastAPI(
     title="MemoryBridge API",
     version="0.4.0-dev",
     description="Secure memory persistence layer for AI applications.",
 )
+
+allowed_origins = _cors_origins()
+if allowed_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed_origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "X-MemoryBridge-Key", "X-Request-ID"],
+        expose_headers=["X-Request-ID"],
+        max_age=600,
+    )
+
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 
