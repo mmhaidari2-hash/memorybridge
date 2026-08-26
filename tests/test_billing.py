@@ -51,6 +51,22 @@ def event(event_id, event_type, tenant_id, **fields):
     obj = {"metadata": {"tenant_id": tenant_id, "plan": fields.pop("plan", "pro")}, **fields}
     return {"id": event_id, "type": event_type, "data": {"object": obj}}
 
+def test_billing_status_requires_workspace_key():
+    reset_database()
+    assert client.get("/v1/billing/status").status_code in {401, 403}
+
+def test_billing_status_exposes_mode_without_secrets(monkeypatch):
+    reset_database(); _, key = seed_tenant()
+    monkeypatch.setenv("BILLING_MODE", "test")
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_example")
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_example")
+    monkeypatch.setenv("STRIPE_PRICE_PRO", "price_pro")
+    monkeypatch.setenv("STRIPE_PRICE_TEAM", "price_team")
+    response = client.get("/v1/billing/status", headers={"X-MemoryBridge-Key": key})
+    assert response.status_code == 200
+    assert response.json() == {"mode": "test", "checkout_configured": True, "webhook_configured": True}
+    assert "sk_test_example" not in response.text and "whsec_example" not in response.text
+
 def test_checkout_completion_does_not_grant_paid_plan(monkeypatch):
     reset_database(); tenant_id, _ = seed_tenant()
     e = event("evt_checkout_1", "checkout.session.completed", tenant_id, client_reference_id=tenant_id, customer="cus_123", subscription="sub_123")
