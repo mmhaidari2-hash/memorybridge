@@ -2,6 +2,8 @@ import os
 
 from fastapi import Depends, FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -72,3 +74,14 @@ def readiness(response: Response, db: Session = Depends(get_db)):
         response.status_code = 503
         return {"status": "not_ready"}
     return {"status": "ready"}
+
+
+@app.get("/app", include_in_schema=False)
+def customer_app_entrypoint():
+    return RedirectResponse(url="/app/landing.html", status_code=307)
+
+
+# Serve the commercial UI from the API process as a same-origin option. This
+# removes CORS from the critical customer path when deployed as a single
+# service while preserving explicit CORS support for split frontend hosting.
+app.mount("/app", StaticFiles(directory="web", html=True), name="customer-web")
