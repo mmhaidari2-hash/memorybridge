@@ -11,8 +11,10 @@ def read(name: str) -> str:
 
 def test_landing_routes_new_customers_through_onboarding():
     html = read("landing.html")
-    assert 'href="onboarding.html"' in html
-    assert "Start with workspace verification" in html
+    # Protect behavior, not marketing copy: multiple commercial CTAs should
+    # route new customers through workspace verification before dashboard use.
+    assert html.count('href="onboarding.html"') >= 3
+    assert 'href="dashboard.html"' not in html
 
 
 def test_onboarding_verifies_real_memory_round_trip():
