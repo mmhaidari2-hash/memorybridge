@@ -16,13 +16,13 @@ def expect_json(url,expected_status,expected_status_value):
     if payload.get("status")!=expected_status_value: raise RuntimeError(f"{url} returned unexpected status payload: {payload!r}")
     return payload,headers.get("X-Request-ID") or headers.get("x-request-id")
 def main():
-    if len(sys.argv)==2 and sys.argv[1] in {"-h","--help"}: print(USAGE); print("Optional: MEMORYBRIDGE_API_KEY verifies account status; SMOKE_STRIPE_CHECKOUT=1 safely creates Test Mode checkout sessions."); return 0
+    if len(sys.argv)==2 and sys.argv[1] in {"-h","--help"}: print(USAGE); print("Optional: MEMORYBRIDGE_API_KEY verifies account status; SMOKE_STRIPE_CHECKOUT=1 creates Test Mode checkout sessions only after server mode is verified as test."); return 0
     if len(sys.argv)!=2: print(USAGE,file=sys.stderr); return 2
     base=sys.argv[1].rstrip("/")
     if not base.startswith("https://"): print("Refusing non-HTTPS deployment target.",file=sys.stderr); return 2
     print("[1/6] health"); expect_json(f"{base}/health",200,"ok")
     print("[2/6] readiness"); expect_json(f"{base}/ready",200,"ready")
-    print("[3/6] root metadata"); status,_,body=request(f"{base}/"); root=json.loads(body) if status==200 else {}; 
+    print("[3/6] root metadata"); status,_,body=request(f"{base}/"); root=json.loads(body) if status==200 else {}
     if status!=200 or root.get("service")!="memorybridge": raise RuntimeError("unexpected root service metadata")
     print("[4/6] customer web entrypoint"); status,_,body=request(f"{base}/app/landing.html")
     if status!=200 or "MemoryBridge" not in body or 'href="onboarding.html"' not in body: raise RuntimeError("customer landing is unavailable or incomplete")
@@ -38,12 +38,17 @@ def main():
     print("[6/6] Stripe Test Mode checkout creation (opt-in)")
     if os.getenv("SMOKE_STRIPE_CHECKOUT","").strip()=="1":
         if not key: raise RuntimeError("SMOKE_STRIPE_CHECKOUT requires MEMORYBRIDGE_API_KEY")
+        status,_,body=request(f"{base}/v1/billing/status",headers=headers)
+        if status!=200: raise RuntimeError(f"billing/status returned HTTP {status}")
+        billing=json.loads(body)
+        if billing.get("mode")!="test": raise RuntimeError("Refusing Stripe smoke checkout because deployed BILLING_MODE is not test")
+        if not billing.get("checkout_configured") or not billing.get("webhook_configured"): raise RuntimeError("Stripe Test Mode configuration is incomplete")
         for plan in ("pro","team"):
             status,_,body=request(f"{base}/v1/billing/checkout",method="POST",headers=headers,body=json.dumps({"plan":plan}).encode())
             if status!=200: raise RuntimeError(f"{plan} checkout returned HTTP {status}: {body[:160]}")
             checkout=json.loads(body); url=checkout.get("checkout_url","")
             if not url.startswith("https://checkout.stripe.com/") or not checkout.get("session_id"): raise RuntimeError(f"{plan} checkout returned invalid Stripe session")
-            print(f"      {plan}=PASS (session created; URL/ID not printed)")
+            print(f"      {plan}=PASS (Test Mode session created; URL/ID not printed)")
     else: print("      skipped: set SMOKE_STRIPE_CHECKOUT=1 only in Stripe Test Mode")
     print("PASS: deployment smoke checks completed"); return 0
 if __name__=="__main__":
