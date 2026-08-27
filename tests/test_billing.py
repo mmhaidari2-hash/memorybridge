@@ -62,6 +62,8 @@ def test_billing_status_exposes_mode_without_secrets(monkeypatch):
     monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_example")
     monkeypatch.setenv("STRIPE_PRICE_PRO", "price_pro")
     monkeypatch.setenv("STRIPE_PRICE_TEAM", "price_team")
+    monkeypatch.setenv("BILLING_SUCCESS_URL", "https://staging.example/app/dashboard.html?billing=success")
+    monkeypatch.setenv("BILLING_CANCEL_URL", "https://staging.example/app/dashboard.html?billing=cancel")
     response = client.get("/v1/billing/status", headers={"X-MemoryBridge-Key": key})
     assert response.status_code == 200
     assert response.json() == {"mode": "test", "checkout_configured": True, "webhook_configured": True}
