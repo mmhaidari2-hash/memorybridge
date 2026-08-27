@@ -26,9 +26,23 @@ class CheckoutResponse(BaseModel):
 
 
 @router.get("/billing/status")
-def billing_status():
+def billing_status(auth: ServiceAuthContext = Depends(verify_service_api_key)):
+    # The deployment smoke probe is part of the customer control plane, not a
+    # public configuration fingerprint endpoint. Require a DB-backed workspace
+    # key just like checkout itself does.
+    if auth.tenant_id is None or auth.workspace_id is None:
+        raise HTTPException(status_code=403, detail="Workspace API key required")
     mode = os.getenv("BILLING_MODE", "").strip().lower() or "unconfigured"
-    checkout_configured = all(os.getenv(name, "").strip() for name in ("STRIPE_SECRET_KEY", "STRIPE_PRICE_PRO", "STRIPE_PRICE_TEAM", "BILLING_SUCCESS_URL", "BILLING_CANCEL_URL"))
+    checkout_configured = all(
+        os.getenv(name, "").strip()
+        for name in (
+            "STRIPE_SECRET_KEY",
+            "STRIPE_PRICE_PRO",
+            "STRIPE_PRICE_TEAM",
+            "BILLING_SUCCESS_URL",
+            "BILLING_CANCEL_URL",
+        )
+    )
     webhook_configured = bool(os.getenv("STRIPE_WEBHOOK_SECRET", "").strip())
     return {"mode": mode, "checkout_configured": checkout_configured, "webhook_configured": webhook_configured}
 
