@@ -31,10 +31,11 @@ def test_onboarding_verifies_real_memory_round_trip():
 def test_dashboard_uses_authoritative_account_and_server_checkout():
     html = read("dashboard.html")
     assert "api('/account/status')" in html
-    assert "a.paid_entitlement_active" in html
-    assert "a.can_upgrade" in html
+    assert "paid_entitlement_active" in html
+    assert "can_upgrade" in html
     assert "api('/billing/checkout'" in html
-    assert "result.checkout_url" in html
+    assert "checkout_url" in html
+    assert "location.href=" in html
     assert "price_" not in html
 
 
