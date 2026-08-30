@@ -151,6 +151,9 @@ activemq-data/
 memorybridge-local-records.sqlite
 drafts.sqlite
 
+# Railway local link metadata
+.railway/
+
 # Environments
 .env
 .envrc
