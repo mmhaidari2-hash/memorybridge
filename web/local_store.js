@@ -17,7 +17,7 @@
     const id = String(raw.id || (crypto.randomUUID ? crypto.randomUUID() : String(Date.now())));
     const created_at = String(raw.created_at || new Date().toISOString());
     if (!title || !body) throw new Error("Record title and body are required");
-    if (source !== "manual" && source !== "extension") throw new Error("Record source is not allowed");
+    if (source !== "manual" && source !== "extension" && source !== "cli") throw new Error("Record source is not allowed");
     [title, body, id, created_at, source].forEach((field) => {
       if (looksSecret(field)) throw new Error("Manual records cannot contain credentials");
     });

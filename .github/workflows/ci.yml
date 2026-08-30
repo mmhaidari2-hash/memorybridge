@@ -38,5 +38,8 @@ jobs:
       - name: Validate deployment smoke CLI
         run: python scripts/deployment_smoke.py --help
 
+      - name: Validate loopback records CLI
+        run: python scripts/loopback_bridge.py --help
+
       - name: Run tests
         run: pytest -q

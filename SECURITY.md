@@ -25,6 +25,7 @@ MemoryBridge v0.4 provides:
 - **Fail-closed production configuration.** Customer-facing deployments must set `APP_ENV=production`. In that mode the process refuses to start with missing/placeholder secrets, non-PostgreSQL `DATABASE_URL`, non-HTTPS CORS origins or billing redirects, wildcard CORS, or Stripe credentials that do not match `BILLING_MODE`.
 - **Secret and log hygiene.** Request logs include method, path, status, duration, and a bounded request ID. They exclude request bodies, query strings, API keys, user/session tokens, Stripe secrets, webhook signatures, checkout URLs/session IDs, encryption keys, and memory content.
 - **CORS policy.** `CORS_ALLOWED_ORIGINS` must list explicit origins. A wildcard `*` is rejected at startup. Same-origin `/app` static pages avoid CORS on the critical customer path.
+- **PWA and loopback drafts.** The `/app` service worker is scoped to `/app/` and never caches `/v1`. Local IndexedDB drafts and `scripts/loopback_bridge.py` use the same manual-record contract. The CLI binds only to loopback and cannot grant paid entitlement.
 - **Test / Live Stripe separation.** The application uses the same variable names in both modes. `BILLING_MODE=test` requires `sk_test_...`; `BILLING_MODE=live` requires `sk_live_...`. Test and Live Price IDs and webhook secrets must not be mixed. Staging remains Test Mode until the sandbox gate passes.
 
 MemoryBridge v0.4 does **not** provide:

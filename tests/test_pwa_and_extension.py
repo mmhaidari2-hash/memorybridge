@@ -28,9 +28,12 @@ def test_service_worker_is_app_scoped_and_ignores_api():
     sw = client.get("/app/sw.js")
     assert sw.status_code == 200
     text = sw.text
-    assert 'scope is /app/' in text or "pathname.startsWith(\"/app/\")" in text
-    assert "pathname.startsWith(\"/v1/\")" in text
-    assert "return;" in text
+    assert "memorybridge-app-v2" in text
+    assert "OFFLINE_FALLBACK" in text
+    assert "/app/landing.html" in text
+    assert "isApiPath" in text
+    assert 'pathname !== "/app/sw.js"' in text
+    assert "pathname.startsWith(\"/v1/\")" in text or 'startsWith("/v1/")' in text
     assert "/v1/account" not in text
     assert "PRECACHE" in text
     assert "/app/records.html" in text
@@ -48,12 +51,39 @@ def test_install_ux_and_records_page_are_wired():
     assert "IndexedDB" in records
     assert "Export SQLite SQL" in records
     assert "Import JSON or SQL" in records
+    assert 'id="loopbackPanel"' in records
+    assert "Pull from CLI" in records
+    assert "Push to CLI" in records
+    assert "isLoopbackHost" in records
+
+
+def test_app_shell_is_revalidatable_while_api_stays_unstoreable():
+    landing = client.get("/app/landing.html")
+    health = client.get("/health")
+    account = client.get("/v1/account/status")
+    assert landing.status_code == 200
+    assert "must-revalidate" in landing.headers["cache-control"]
+    assert "no-store" not in landing.headers["cache-control"]
+    assert health.headers["cache-control"] == "no-store"
+    assert account.headers["cache-control"] == "no-store"
+
+
+def test_precache_shell_files_exist_and_are_served():
+    sw = (WEB / "sw.js").read_text(encoding="utf-8")
+    start = sw.index("const PRECACHE = [")
+    end = sw.index("];", start)
+    paths = [line.strip().strip(",").strip('"') for line in sw[start:end].splitlines() if "/app/" in line]
+    assert "/app/records.html" in paths
+    assert "/app/local_store.js" in paths
+    for path in paths:
+        assert client.get(path).status_code == 200, path
 
 
 def test_local_store_rejects_secrets_and_matches_python_kind():
     js = (WEB / "local_store.js").read_text(encoding="utf-8")
     assert "memorybridge.manual_records" in js
     assert "mbs_" in js and "sk_live_" in js and "whsec_" in js
+    assert 'source !== "cli"' in js
     assert "CREATE TABLE IF NOT EXISTS manual_records" in js
     assert "indexedDB.open" in js
 
@@ -67,6 +97,7 @@ def test_extension_pairs_origin_only_and_stays_local():
     content = (EXT / "content.js").read_text(encoding="utf-8")
     assert "memorybridge.pair" in background
     assert "pairedOrigin" in background
+    assert "saveDraft" not in background
     assert "mbs_" not in background
     assert "Do not store credentials" in popup
     assert "memorybridge.extensionRecord" in content

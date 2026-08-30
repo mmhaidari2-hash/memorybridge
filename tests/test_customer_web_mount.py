@@ -33,9 +33,11 @@ def test_pwa_and_local_records_are_same_origin_assets():
     manifest = client.get("/app/manifest.webmanifest")
     sw = client.get("/app/sw.js")
     store = client.get("/app/local_store.js")
+    pwa = client.get("/app/pwa.js")
     assert records.status_code == 200
     assert "IndexedDB" in records.text
     assert manifest.status_code == 200
     assert "application/manifest+json" in manifest.headers["content-type"]
     assert sw.status_code == 200
     assert store.status_code == 200
+    assert pwa.status_code == 200

@@ -224,13 +224,23 @@ Run:
 pytest -q
 ```
 
-The suite covers the core encrypted-memory flow plus service authentication, tenant/workspace isolation, usage metering, quota boundaries, API-key lifecycle, checkout session creation, billing entitlement security, webhook idempotency, operator workspace bootstrap, Python client behavior, PWA install contracts, extension pairing, and local manual-record export/import.
+The suite covers the core encrypted-memory flow plus service authentication, tenant/workspace isolation, usage metering, quota boundaries, API-key lifecycle, checkout session creation, billing entitlement security, webhook idempotency, operator workspace bootstrap, Python client behavior, PWA install contracts, extension pairing, local manual-record export/import, and the loopback CLI bridge.
 
 ## PWA, companion extension, and local drafts
 
 `/app` is installable as a same-origin PWA. The service worker is scoped to `/app/` and never caches `/v1/` API traffic. Local manual drafts live in IndexedDB and can be exported or imported as JSON or SQLite-compatible SQL. They are not server memory and cannot grant paid entitlement.
 
 The unpacked Chrome MV3 companion in `extension/` pairs from Dashboard and can send a draft into the open records page. It stores only the app origin, not the workspace API key.
+
+## Loopback CLI for local drafts
+
+`scripts/loopback_bridge.py` stores the same manual-record JSON/SQL contract in a local SQLite file and can serve it on loopback HTTP only (`127.0.0.1` / `localhost` / `::1`). It never binds to `0.0.0.0`, never proxies `/v1`, and cannot grant paid entitlement. On a loopback `/app/records.html` page, Pull / Push talks to `http://127.0.0.1:8765`.
+
+```bash
+python scripts/loopback_bridge.py --db drafts.sqlite record --title "Follow-up" --body "Local note"
+python scripts/loopback_bridge.py --db drafts.sqlite export --json drafts.json
+python scripts/loopback_bridge.py --db drafts.sqlite serve --host 127.0.0.1 --port 8765
+```
 
 ## Deployment gate
 

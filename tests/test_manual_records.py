@@ -35,6 +35,13 @@ def test_sqlite_sql_round_trip_and_rejects_foreign_inserts():
         import_sqlite_sql("INSERT INTO users (id) VALUES ('1');")
 
 
+def test_cli_source_is_accepted_and_unknown_source_is_rejected():
+    record = normalize_record({"title": "CLI note", "body": "From the loopback CLI", "source": "cli"})
+    assert record["source"] == "cli"
+    with pytest.raises(ManualRecordError, match="source"):
+        normalize_record({"title": "Nope", "body": "Body", "source": "network"})
+
+
 def test_import_bundle_rejects_unknown_kind_and_api_keys():
     with pytest.raises(ManualRecordError, match="kind"):
         import_bundle({"version": 1, "kind": "other", "records": []})
