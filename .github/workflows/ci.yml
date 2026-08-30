@@ -11,6 +11,10 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
     env:
       PYTHONPATH: .
       DATABASE_URL: postgresql://memorybridge:memorybridge@localhost:5432/memorybridge
@@ -23,13 +27,13 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
       - name: Compile Python
-        run: python -m compileall app routers main.py memorybridge_client.py scripts/deployment_smoke.py
+        run: python -m compileall app routers main.py memorybridge_client.py scripts
 
       - name: Validate deployment smoke CLI
         run: python scripts/deployment_smoke.py --help

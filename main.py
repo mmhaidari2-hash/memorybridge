@@ -1,3 +1,4 @@
+import mimetypes
 import os
 
 from fastapi import Depends, FastAPI, Response
@@ -84,4 +85,6 @@ def customer_app_entrypoint():
 # Serve the commercial UI from the API process as a same-origin option. This
 # removes CORS from the critical customer path when deployed as a single
 # service while preserving explicit CORS support for split frontend hosting.
+# Browsers refuse PWA install if the manifest is sniffed as a generic octet stream.
+mimetypes.add_type("application/manifest+json", ".webmanifest")
 app.mount("/app", StaticFiles(directory="web", html=True), name="customer-web")

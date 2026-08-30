@@ -134,3 +134,145 @@ def test_invalid_signature_is_rejected_without_database_write(monkeypatch):
     response=client.post("/v1/billing/webhook",content=b"{}",headers={"Stripe-Signature":"invalid"}); assert response.status_code==400
     with TestingSessionLocal() as db:
         assert db.get(Tenant,tenant_id).plan=="free"; assert db.query(BillingEvent).count()==0
+
+
+SUCCESS_URL = "https://staging.example/app/dashboard.html?billing=success"
+CANCEL_URL = "https://staging.example/app/dashboard.html?billing=cancel"
+
+
+def configure_checkout(monkeypatch):
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_example")
+    monkeypatch.setenv("STRIPE_PRICE_PRO", "price_pro_server")
+    monkeypatch.setenv("STRIPE_PRICE_TEAM", "price_team_server")
+    monkeypatch.setenv("BILLING_SUCCESS_URL", SUCCESS_URL)
+    monkeypatch.setenv("BILLING_CANCEL_URL", CANCEL_URL)
+
+
+class FakeCheckoutSession:
+    def __init__(self, url="https://checkout.stripe.com/c/pay/cs_test_1", session_id="cs_test_1"):
+        self.url = url
+        self.id = session_id
+
+
+def capture_checkout_create(monkeypatch, session=None, error=None):
+    seen = {}
+
+    def fake_create(**kwargs):
+        seen.update(kwargs)
+        if error is not None:
+            raise error
+        return session if session is not None else FakeCheckoutSession()
+
+    monkeypatch.setattr(billing_router.stripe.checkout.Session, "create", fake_create)
+    return seen
+
+
+def test_checkout_requires_database_workspace_key(monkeypatch):
+    reset_database()
+    configure_checkout(monkeypatch)
+    capture_checkout_create(monkeypatch)
+    assert client.post("/v1/billing/checkout", json={"plan": "pro"}).status_code in {401, 403}
+    monkeypatch.setenv("SERVICE_API_KEYS", "mbs_legacy_checkout_key")
+    from app.service_auth import get_legacy_service_key_hashes
+    get_legacy_service_key_hashes.cache_clear()
+    response = client.post(
+        "/v1/billing/checkout",
+        json={"plan": "pro"},
+        headers={"X-MemoryBridge-Key": "mbs_legacy_checkout_key"},
+    )
+    assert response.status_code == 403
+
+
+def test_checkout_pro_uses_server_price_subscription_metadata_and_redirects(monkeypatch):
+    reset_database()
+    tenant_id, key = seed_tenant()
+    configure_checkout(monkeypatch)
+    seen = capture_checkout_create(monkeypatch)
+    response = client.post(
+        "/v1/billing/checkout",
+        json={"plan": "pro", "price_id": "price_attacker_supplied", "price": "price_attacker_supplied"},
+        headers={"X-MemoryBridge-Key": key},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["session_id"] == "cs_test_1"
+    assert body["checkout_url"].startswith("https://checkout.stripe.com/")
+    assert seen["mode"] == "subscription"
+    assert seen["line_items"] == [{"price": "price_pro_server", "quantity": 1}]
+    assert seen["success_url"] == SUCCESS_URL
+    assert seen["cancel_url"] == CANCEL_URL
+    assert seen["client_reference_id"] == tenant_id
+    assert seen["metadata"] == {"tenant_id": tenant_id, "plan": "pro"}
+    assert seen["subscription_data"]["metadata"] == {"tenant_id": tenant_id, "plan": "pro"}
+    with TestingSessionLocal() as db:
+        tenant = db.get(Tenant, tenant_id)
+        assert tenant.plan == "free"
+        assert tenant.subscription_status is None
+        assert db.query(BillingEvent).count() == 0
+
+
+def test_checkout_team_uses_server_owned_team_price(monkeypatch):
+    reset_database()
+    tenant_id, key = seed_tenant()
+    configure_checkout(monkeypatch)
+    seen = capture_checkout_create(monkeypatch)
+    response = client.post(
+        "/v1/billing/checkout",
+        json={"plan": "team"},
+        headers={"X-MemoryBridge-Key": key},
+    )
+    assert response.status_code == 200
+    assert seen["mode"] == "subscription"
+    assert seen["line_items"] == [{"price": "price_team_server", "quantity": 1}]
+    assert seen["metadata"] == {"tenant_id": tenant_id, "plan": "team"}
+    with TestingSessionLocal() as db:
+        assert db.get(Tenant, tenant_id).plan == "free"
+
+
+def test_checkout_rejects_unsupported_plan_without_calling_stripe(monkeypatch):
+    reset_database()
+    _, key = seed_tenant()
+    configure_checkout(monkeypatch)
+    seen = capture_checkout_create(monkeypatch)
+    response = client.post(
+        "/v1/billing/checkout",
+        json={"plan": "price_attacker_supplied"},
+        headers={"X-MemoryBridge-Key": key},
+    )
+    assert response.status_code == 400
+    assert seen == {}
+
+
+def test_checkout_provider_error_returns_safe_502(monkeypatch):
+    reset_database()
+    tenant_id, key = seed_tenant()
+    configure_checkout(monkeypatch)
+    capture_checkout_create(monkeypatch, error=stripe.StripeError("card_decline secret=sk_test_leaked"))
+    response = client.post(
+        "/v1/billing/checkout",
+        json={"plan": "pro"},
+        headers={"X-MemoryBridge-Key": key},
+    )
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Billing provider error"
+    assert "sk_test_leaked" not in response.text
+    assert "card_decline" not in response.text
+    with TestingSessionLocal() as db:
+        assert db.get(Tenant, tenant_id).plan == "free"
+
+
+def test_checkout_missing_url_fails_closed_without_plan_change(monkeypatch):
+    reset_database()
+    tenant_id, key = seed_tenant()
+    configure_checkout(monkeypatch)
+    capture_checkout_create(monkeypatch, session=FakeCheckoutSession(url="", session_id="cs_missing_url"))
+    response = client.post(
+        "/v1/billing/checkout",
+        json={"plan": "pro"},
+        headers={"X-MemoryBridge-Key": key},
+    )
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Billing provider did not return a checkout URL"
+    with TestingSessionLocal() as db:
+        assert db.get(Tenant, tenant_id).plan == "free"
+        assert db.query(BillingEvent).count() == 0

@@ -27,15 +27,15 @@ Set these protected environment variables on the deployed API:
 STRIPE_SECRET_KEY=sk_test_...
 STRIPE_PRICE_PRO=price_...
 STRIPE_PRICE_TEAM=price_...
-BILLING_SUCCESS_URL=https://YOUR-APP.example/billing/success
-BILLING_CANCEL_URL=https://YOUR-APP.example/billing/cancel
+BILLING_SUCCESS_URL=https://YOUR-STAGING-HOST/app/dashboard.html?billing=success
+BILLING_CANCEL_URL=https://YOUR-STAGING-HOST/app/dashboard.html?billing=cancel
 ```
 
 Do not set `STRIPE_WEBHOOK_SECRET` until the webhook endpoint is created in step 4.
 
 ## 3. Apply migrations and verify readiness
 
-Run:
+Application startup does not apply migrations. Run this explicit operator step first:
 
 ```bash
 alembic upgrade head

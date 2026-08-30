@@ -26,3 +26,16 @@ def test_onboarding_and_dashboard_are_same_origin_assets():
     assert dashboard.status_code == 200
     assert "/v1/account/status" in onboarding.text
     assert "api('/account/status')" in dashboard.text
+
+
+def test_pwa_and_local_records_are_same_origin_assets():
+    records = client.get("/app/records.html")
+    manifest = client.get("/app/manifest.webmanifest")
+    sw = client.get("/app/sw.js")
+    store = client.get("/app/local_store.js")
+    assert records.status_code == 200
+    assert "IndexedDB" in records.text
+    assert manifest.status_code == 200
+    assert "application/manifest+json" in manifest.headers["content-type"]
+    assert sw.status_code == 200
+    assert store.status_code == 200
