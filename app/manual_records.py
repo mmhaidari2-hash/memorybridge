@@ -22,7 +22,7 @@ SECRET_MARKERS = (
     "STRIPE_SECRET",
     "STRIPE_WEBHOOK",
 )
-ALLOWED_SOURCES = {"manual", "extension", "cli"}
+ALLOWED_SOURCES = {"manual", "extension"}
 _INSERT_PREFIX = "INSERT INTO manual_records (id, created_at, title, body, source) VALUES ("
 
 

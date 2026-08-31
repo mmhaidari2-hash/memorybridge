@@ -10,10 +10,5 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-        # API and other responses stay unstoreable. The /app shell is
-        # revalidated so the PWA service worker can keep an offline copy.
-        if request.method == "GET" and request.url.path.startswith("/app/"):
-            response.headers["Cache-Control"] = "public, max-age=0, must-revalidate"
-        else:
-            response.headers.setdefault("Cache-Control", "no-store")
+        response.headers.setdefault("Cache-Control", "no-store")
         return response

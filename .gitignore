@@ -147,10 +147,6 @@ activemq-data/
 # SageMath parsed files
 *.sage.py
 
-# Local loopback CLI store
-memorybridge-local-records.sqlite
-drafts.sqlite
-
 # Railway local link metadata
 .railway/
 

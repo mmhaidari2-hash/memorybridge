@@ -32,14 +32,6 @@
       <label class="btn" for="importFile">Import JSON or SQL</label>
       <input id="importFile" type="file" accept=".json,.sql,application/json,text/plain" hidden>
     </div>
-    <div id="loopbackPanel" hidden>
-      <p class="sub" style="margin-top:14px">Loopback CLI bridge. Only offered on localhost. This does not grant paid entitlement and never sends the workspace API key.</p>
-      <input id="bridgeUrl" class="input" value="http://127.0.0.1:8765">
-      <div class="row" style="margin-top:10px">
-        <button class="btn" type="button" onclick="pullFromCli()">Pull from CLI</button>
-        <button class="btn" type="button" onclick="pushToCli()">Push to CLI</button>
-      </div>
-    </div>
     <div id="status" class="status" role="status"></div>
     <div id="list"></div>
   </section>
@@ -57,12 +49,6 @@ async function exportJson(){try{download('memorybridge-manual-records.json',Memo
 async function exportSql(){try{download('memorybridge-manual-records.sql',MemoryBridgeLocal.exportSqliteSql(await MemoryBridgeLocal.listRecords()),'text/plain');show('SQLite SQL export ready.')}catch(e){show(e.message,'err')}}
 $('importFile').addEventListener('change',async(event)=>{const file=event.target.files&&event.target.files[0];event.target.value='';if(!file)return;try{const text=await file.text();const imported=await MemoryBridgeLocal.importAndStore(text);show(`Imported ${imported.length} local record(s).`);await render()}catch(e){show(e.message,'err')}});
 window.addEventListener('message',async(event)=>{if(event.origin!==location.origin)return;const data=event.data||{};if(data.type!=='memorybridge.extensionRecord')return;try{await MemoryBridgeLocal.addRecord({title:data.title,body:data.body,source:'extension'});show('Extension draft saved locally.');await render()}catch(e){show(e.message,'err')}});
-function isLoopbackName(host){return ['localhost','127.0.0.1','[::1]','::1'].includes(host)}
-function isLoopbackHost(){return isLoopbackName(location.hostname)}
-function bridgeBase(){const raw=$('bridgeUrl').value.trim();const url=new URL(raw);if(!isLoopbackName(url.hostname)||(url.protocol!=='http:'&&url.protocol!=='https:'))throw new Error('CLI bridge URL must be loopback HTTP(S)');return url.origin}
-async function pullFromCli(){try{const r=await fetch(bridgeBase()+'/records');const bundle=await r.json();if(!r.ok)throw new Error(bundle.error||`HTTP ${r.status}`);const imported=await MemoryBridgeLocal.importAndStore(JSON.stringify(bundle));show(`Pulled ${imported.length} draft(s) from the loopback CLI.`);await render()}catch(e){show(e.message,'err')}}
-async function pushToCli(){try{const bundle=JSON.parse(MemoryBridgeLocal.exportJson(await MemoryBridgeLocal.listRecords()));const r=await fetch(bridgeBase()+'/records',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(bundle)});const body=await r.json().catch(()=>({}));if(!r.ok)throw new Error(body.error||`HTTP ${r.status}`);show(`Pushed ${body.imported||0} draft(s) to the loopback CLI.`)}catch(e){show(e.message,'err')}}
-if(isLoopbackHost()){$('loopbackPanel').hidden=false}
 render().catch((e)=>show(e.message,'err'));
 </script>
 </body>

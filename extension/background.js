@@ -10,5 +10,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     });
     return true;
   }
+  if (message.type === "memorybridge.saveDraft") {
+    chrome.storage.local.get(["pairedOrigin"], (stored) => {
+      sendResponse({ ok: true, origin: stored.pairedOrigin || "" });
+    });
+    return true;
+  }
   return undefined;
 });
