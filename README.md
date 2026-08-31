@@ -32,17 +32,9 @@ Stripe billing remains in Test Mode until the sandbox release gate in `docs/STRI
 
 MemoryBridge is **not currently a zero-knowledge or end-to-end encrypted system**. The server receives plaintext memory content and has access to the encryption key in order to encrypt and decrypt it.
 
-## Workspace access (read this before onboarding)
-
-These three paths are different. Do not conflate them:
-
-1. **Customer onboarding (exists).** `/app/onboarding.html` verifies an already-provisioned workspace API key, then requires a real store/recall round-trip before the dashboard. It does not create a tenant, workspace, or first API key.
-2. **Operator bootstrap (exists).** The first Staging or local workspace is created by an operator after migrations, using `scripts/bootstrap_workspace.py` with explicit tenant and workspace names. The CLI prints the plaintext `mbs_...` key once. There is no public HTTP provisioning endpoint.
-3. **Public self-service signup (does not exist).** MemoryBridge does not currently offer public signup or browser-based workspace creation.
-
 ## Five-minute developer path
 
-Configure the service from `.env.example`, apply migrations, start the API, then obtain a workspace API key from operator bootstrap (or a later key created by an already-authenticated workspace). Onboarding only verifies that key.
+The hosted customer flow will provision a workspace API key. For local/self-hosted development, configure the service first using `.env.example`, run migrations, and start the API.
 
 ### 1. Start the service
 
@@ -52,13 +44,8 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 alembic upgrade head
-python scripts/bootstrap_workspace.py --tenant-name "Local Dev" --workspace-name "Default"
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
-
-Application startup does not run migrations. `alembic upgrade head` is a required operator step before the API can use tenant, workspace, billing, or usage tables.
-
-The bootstrap CLI prints the workspace API key once. Do not paste that value into GitHub, logs, tickets, screenshots, or committed files.
 
 Verify readiness:
 
@@ -214,7 +201,7 @@ When a tenant reaches its monthly event quota, billable operations fail with HTT
 
 Responses include `X-Request-ID`. Logs contain method, path, status code, duration, and request ID while intentionally excluding sensitive request data.
 
-The request-rate limiter is process-local in development and ignores a leftover `REDIS_URL`. You do not need to unset that variable for local work. Redis is used only when `RATE_LIMIT_BACKEND=redis` or when `APP_ENV=production` and `REDIS_URL` is set. If Redis is opted into locally but unreachable, the limiter falls back to memory. Production fails closed if `REDIS_URL` is set but Redis cannot be reached. Usage quota enforcement is backed by persisted usage events, but scaling and concurrency behavior must still be load-tested before high-volume production claims are made.
+The current request-rate limiter is process-local. Before horizontal scaling, move rate-limit state to a distributed backend such as Redis. Usage quota enforcement is backed by persisted usage events, but scaling and concurrency behavior must still be load-tested before high-volume production claims are made.
 
 ## Tests
 
@@ -224,13 +211,7 @@ Run:
 pytest -q
 ```
 
-The suite covers the core encrypted-memory flow plus service authentication, tenant/workspace isolation, usage metering, quota boundaries, API-key lifecycle, checkout session creation, billing entitlement security, webhook idempotency, operator workspace bootstrap, Python client behavior, PWA install contracts, extension pairing, and local manual-record export/import.
-
-## PWA, companion extension, and local drafts
-
-`/app` is installable as a same-origin PWA. The service worker is scoped to `/app/` and never caches `/v1/` API traffic. Local manual drafts live in IndexedDB and can be exported or imported as JSON or SQLite-compatible SQL. They are not server memory and cannot grant paid entitlement.
-
-The unpacked Chrome MV3 companion in `extension/` pairs from Dashboard and can send a draft into the open records page. It stores only the app origin, not the workspace API key.
+The suite covers the core encrypted-memory flow plus service authentication, tenant/workspace isolation, usage metering, quota boundaries, API-key lifecycle, billing entitlement security, webhook idempotency, and Python client behavior.
 
 ## Deployment gate
 
@@ -252,16 +233,12 @@ MemoryBridge does not currently claim zero-knowledge encryption, end-to-end encr
 
 ## Near-term path to market
 
-The commercial Landing, Onboarding, and Dashboard pages already exist. Onboarding verifies an operator-provisioned workspace key; it is not public signup.
-
-1. Deploy Staging, apply migrations, and bootstrap the first workspace with the operator CLI.
-2. Pass deployed Stripe Test Mode end-to-end, including a genuine signed webhook.
-3. Validate the five-minute integration path with external developers using a provisioned workspace key.
+1. Pass deployed Stripe Test Mode end-to-end.
+2. Finish the customer dashboard and self-serve onboarding surface.
+3. Validate the five-minute integration path with external developers.
 4. Publish clear pricing only after cost and willingness-to-pay validation.
 5. Recruit a small private beta and measure activation, repeated use, conversion, and retention.
 6. Enable Live Mode only after the commercial release gate passes.
-
-Public self-service workspace provisioning is future work and is not available in this branch.
 
 ## License
 

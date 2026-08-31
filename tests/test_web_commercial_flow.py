@@ -17,13 +17,6 @@ def test_landing_routes_new_customers_through_onboarding():
     assert 'href="dashboard.html"' not in html
 
 
-def test_landing_docs_use_github_readme_not_unserved_relative_path():
-    html = read("landing.html")
-    # /app does not serve README.md; relative ../README.md would 404.
-    assert "../README.md" not in html
-    assert html.count("https://github.com/mmhaidari2-hash/memorybridge#readme") >= 2
-
-
 def test_onboarding_verifies_real_memory_round_trip():
     html = read("onboarding.html")
     assert "/v1/account/status" in html

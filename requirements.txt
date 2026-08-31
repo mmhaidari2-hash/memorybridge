@@ -1,14 +1,11 @@
-# MemoryBridge runtime pins. Supported CPython: 3.11–3.13.
-# 3.13 requires wheels that 2.9.9 / pydantic 2.6.4 do not publish.
 fastapi==0.110.0
 uvicorn==0.28.0
-sqlalchemy==2.0.36
-psycopg2-binary==2.9.10
-pydantic==2.8.2
+sqlalchemy==2.0.28
+psycopg2-binary==2.9.9
+pydantic==2.6.4
 cryptography==42.0.5
 requests==2.31.0
 alembic==1.13.1
 pytest==8.1.1
 httpx==0.27.0
 stripe==10.12.0
-redis==5.2.1

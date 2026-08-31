@@ -4,42 +4,7 @@ Use immediately after every staging or production deployment and before customer
 
 ## 1. Runtime and migration gate
 
-Customer-facing staging/production uses `APP_ENV=production`. Staging must remain `BILLING_MODE=test`; Live Mode is allowed only after the sandbox gate. Never bypass runtime validation.
-
-### Required pre-deploy migration
-
-Application startup (`uvicorn`, the Docker `CMD`, or process restart) does **not** run Alembic and must not be treated as schema migration. Before the first request, and after every deploy that can include a schema change, run this as an explicit operator step against the target database:
-
-```bash
-alembic upgrade head
-```
-
-Expected current head: `0005_billing_state` (tenants/workspaces, workspace API keys, usage events, and billing state). Do not start or smoke-test the API if this command fails.
-
-If migration fails:
-
-1. Keep the application off customer traffic. Do not start checkout or webhook traffic against a half-migrated database.
-2. Capture the Alembic error and the current `alembic current` revision. Do not paste database credentials into that record.
-3. Do not hand-edit production tables to “finish” a failed revision.
-4. Restore the previous known-good application commit and, if the schema change is unsafe, restore the previous known-good database snapshot.
-5. Re-run `alembic current` and `alembic upgrade head` only after the revision is fixed.
-6. Re-run `/ready` and `scripts/deployment_smoke.py` only after migration reports success.
-
-### First-workspace operator bootstrap
-
-Onboarding does not create a tenant or API key. After a successful `alembic upgrade head`, an operator bootstraps the first Staging workspace with the CLI. There is no public HTTP provisioning endpoint.
-
-```bash
-python scripts/bootstrap_workspace.py \
-  --tenant-name "Staging Tenant" \
-  --workspace-name "Staging Workspace"
-```
-
-The command prints the plaintext `mbs_...` workspace API key **once**. Store it in a secrets manager or a local operator secret store, then use it for onboarding and `MEMORYBRIDGE_API_KEY`.
-
-**Warning:** Do not paste the plaintext API key into GitHub, logs, tickets, screenshots, CI output, evidence records, or committed files. If it is exposed, revoke it after creating a replacement with a still-valid workspace key, or bootstrap a fresh disposable workspace.
-
-A second run with the same tenant name or workspace name/slug fails closed and does not print a new key. Use the existing key or choose distinct names.
+Customer-facing staging/production uses `APP_ENV=production`. Staging must remain `BILLING_MODE=test`; Live Mode is allowed only after the sandbox gate. Apply `alembic upgrade head`. Never bypass runtime validation.
 
 ### Exact Stripe staging environment variables
 
@@ -52,9 +17,9 @@ STRIPE_SECRET_KEY=sk_test_...
 STRIPE_WEBHOOK_SECRET=whsec_...
 STRIPE_PRICE_PRO=price_...       # Stripe Test Mode Pro recurring price
 STRIPE_PRICE_TEAM=price_...      # Stripe Test Mode Team recurring price
-BILLING_SUCCESS_URL=https://YOUR-STAGING-HOST/app/dashboard.html?billing=success
-BILLING_CANCEL_URL=https://YOUR-STAGING-HOST/app/dashboard.html?billing=cancel
-CORS_ALLOWED_ORIGINS=https://YOUR-STAGING-HOST
+BILLING_SUCCESS_URL=https://YOUR-STAGING-API.example/app/dashboard.html?billing=success
+BILLING_CANCEL_URL=https://YOUR-STAGING-API.example/app/dashboard.html?billing=cancel
+CORS_ALLOWED_ORIGINS=https://YOUR-STAGING-API.example
 ```
 
 The deployment also still requires the normal production variables, especially `DATABASE_URL` and a valid 32-byte-base64 `ENCRYPTION_KEY`. `STRIPE_PRICE_PRO` and `STRIPE_PRICE_TEAM` must be different Test Mode `price_` IDs. Never place Stripe secrets in Git, URLs, screenshots, CI output, or this evidence record.
