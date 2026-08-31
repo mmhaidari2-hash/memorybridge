@@ -4,7 +4,24 @@ Use immediately after every staging or production deployment and before customer
 
 ## 1. Runtime and migration gate
 
-Customer-facing staging/production uses `APP_ENV=production`. Staging must remain `BILLING_MODE=test`; Live Mode is allowed only after the sandbox gate. Apply `alembic upgrade head`. Never bypass runtime validation.
+Customer-facing staging/production uses `APP_ENV=production`. Staging must remain `BILLING_MODE=test`; Live Mode is allowed only after the sandbox gate. Never bypass runtime validation.
+
+### Migrations are an explicit deployment operation
+
+Application startup is **not** migration execution. The API process does not run Alembic automatically. Before any customer traffic:
+
+```bash
+alembic upgrade head
+```
+
+Rules:
+
+- Migration failure must stop the deployment. Do not mark the release ready, do not invite traffic, and do not continue to Stripe testing.
+- Do not manually fabricate missing billing tables or otherwise edit production schema by hand.
+- Do not continue to workspace bootstrap, First Successful Memory, or Stripe Test Checkout if `alembic upgrade head` failed.
+- Rollback of a bad deployment should use the host's deployment/database operational procedures (restore the previous known-good application revision and, if needed, a verified database backup / Alembic downgrade plan). Do not invent ad-hoc SQL as a substitute.
+
+Confirm the billing migration exists before webhook traffic begins.
 
 ### Exact Stripe staging environment variables
 
@@ -17,20 +34,30 @@ STRIPE_SECRET_KEY=sk_test_...
 STRIPE_WEBHOOK_SECRET=whsec_...
 STRIPE_PRICE_PRO=price_...       # Stripe Test Mode Pro recurring price
 STRIPE_PRICE_TEAM=price_...      # Stripe Test Mode Team recurring price
-BILLING_SUCCESS_URL=https://YOUR-STAGING-API.example/app/dashboard.html?billing=success
-BILLING_CANCEL_URL=https://YOUR-STAGING-API.example/app/dashboard.html?billing=cancel
-CORS_ALLOWED_ORIGINS=https://YOUR-STAGING-API.example
+BILLING_SUCCESS_URL=https://YOUR-STAGING-HOST/app/dashboard.html?billing=success
+BILLING_CANCEL_URL=https://YOUR-STAGING-HOST/app/dashboard.html?billing=cancel
+CORS_ALLOWED_ORIGINS=https://YOUR-STAGING-HOST
 ```
 
 The deployment also still requires the normal production variables, especially `DATABASE_URL` and a valid 32-byte-base64 `ENCRYPTION_KEY`. `STRIPE_PRICE_PRO` and `STRIPE_PRICE_TEAM` must be different Test Mode `price_` IDs. Never place Stripe secrets in Git, URLs, screenshots, CI output, or this evidence record.
+
+### Operator first-workspace bootstrap
+
+Public self-service signup does not exist. After migrations succeed, create the first staging tenant/workspace/API key with the operator CLI (not an HTTP route):
+
+```bash
+python scripts/bootstrap_workspace.py --tenant-name "Staging Tenant" --workspace-name "Staging Workspace"
+```
+
+Capture the printed key once into a protected secret store. Do not paste it into GitHub, logs, tickets, or this evidence record. Duplicate tenant/workspace names are rejected.
 
 ## 2. Public deployment smoke
 
 Run externally:
 
 ```bash
-python scripts/deployment_smoke.py https://YOUR-STAGING-API.example
-MEMORYBRIDGE_API_KEY='mbs_...' python scripts/deployment_smoke.py https://YOUR-STAGING-API.example
+python scripts/deployment_smoke.py https://YOUR-STAGING-HOST
+MEMORYBRIDGE_API_KEY='mbs_...' python scripts/deployment_smoke.py https://YOUR-STAGING-HOST
 ```
 
 Expected: health, readiness, service metadata, customer web entrypoint, and authenticated account control-plane pass. Secrets must never be placed in URLs or evidence logs.
@@ -50,7 +77,7 @@ Only with the exact staging variables above and a disposable workspace:
 ```bash
 MEMORYBRIDGE_API_KEY='mbs_...' \
 SMOKE_STRIPE_CHECKOUT=1 \
-python scripts/deployment_smoke.py https://YOUR-STAGING-API.example
+python scripts/deployment_smoke.py https://YOUR-STAGING-HOST
 ```
 
 Before creating a session, the smoke script authenticates to `GET /v1/billing/status` and requires `mode=test`, `checkout_configured=true`, and `webhook_configured=true`. It then creates Pro and Team Checkout Sessions and requires Stripe-hosted checkout URLs. It does **not** print checkout URLs/session IDs, complete payment, or grant entitlement. If the deployed service reports any mode other than `test`, the probe fails closed and refuses checkout creation.
@@ -62,7 +89,7 @@ Then manually/browser-test the customer path: Onboarding -> Dashboard -> Pro/Tea
 The canonical staging endpoint is:
 
 ```text
-POST https://YOUR-STAGING-API.example/v1/billing/webhook
+POST https://YOUR-STAGING-HOST/v1/billing/webhook
 ```
 
 ### Preferred: Stripe Dashboard Test Mode endpoint
@@ -85,7 +112,7 @@ After payment, verify with the same workspace key:
 ```bash
 curl -sS \
   -H 'X-MemoryBridge-Key: mbs_...' \
-  https://YOUR-STAGING-API.example/v1/account/status
+  https://YOUR-STAGING-HOST/v1/account/status
 ```
 
 Required result: after the authoritative subscription event, `paid_entitlement_active=true`, the selected plan is reported, and the subscription state is active/trialing. `checkout.session.completed` alone must never produce that result.
@@ -97,7 +124,7 @@ For an operator-controlled temporary test, authenticate Stripe CLI to the Test M
 ```bash
 stripe listen \
   --events checkout.session.completed,customer.subscription.created,customer.subscription.updated,customer.subscription.deleted,invoice.payment_succeeded,invoice.payment_failed \
-  --forward-to https://YOUR-STAGING-API.example/v1/billing/webhook
+  --forward-to https://YOUR-STAGING-HOST/v1/billing/webhook
 ```
 
 `stripe listen` prints a temporary `whsec_...`. The staging application must use **that exact temporary signing secret** while this listener is the sender; a Dashboard endpoint signing secret will not validate CLI-forwarded signatures. Restore the persistent Dashboard webhook secret afterward.
@@ -135,7 +162,7 @@ After staging variables and the genuine signed webhook endpoint are configured, 
 ```bash
 MEMORYBRIDGE_API_KEY='mbs_...' \
 SMOKE_STRIPE_CHECKOUT=1 \
-python scripts/deployment_smoke.py https://YOUR-STAGING-API.example
+python scripts/deployment_smoke.py https://YOUR-STAGING-HOST
 ```
 
 A valid final smoke report must contain PASS for the deployment checks plus both Pro and Team Test Mode session creation. Then record the genuine signed webhook/account-sync result separately; `deployment_smoke.py` intentionally does not fake or auto-complete a payment.

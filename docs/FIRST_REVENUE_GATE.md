@@ -21,8 +21,9 @@ A checkout redirect, test transaction, manually changed plan, verbal commitment,
 ## Current product path
 
 ```text
-Landing
-  -> First-run onboarding
+Operator bootstrap of first workspace API key
+  -> Landing
+  -> First-run onboarding (verifies an already-provisioned key)
   -> Workspace verification
   -> Real store + recall activation
   -> Customer dashboard
@@ -32,6 +33,8 @@ Landing
   -> Verified subscription webhook
   -> Paid entitlement
 ```
+
+Public self-service signup does not currently exist. Landing, Onboarding, and Dashboard already exist as `/app` pages.
 
 ## Gate A — repository and CI
 

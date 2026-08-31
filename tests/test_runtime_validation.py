@@ -15,8 +15,8 @@ def set_valid_production(monkeypatch, mode="test"):
     monkeypatch.setenv("DATABASE_URL", "postgresql://memorybridge:secret@db.internal:5432/memorybridge")
     monkeypatch.setenv("ENCRYPTION_KEY", VALID_KEY)
     monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "https://app.memorybridge.test")
-    monkeypatch.setenv("BILLING_SUCCESS_URL", "https://app.memorybridge.test/billing/success")
-    monkeypatch.setenv("BILLING_CANCEL_URL", "https://app.memorybridge.test/billing/cancel")
+    monkeypatch.setenv("BILLING_SUCCESS_URL", "https://app.memorybridge.test/app/dashboard.html?billing=success")
+    monkeypatch.setenv("BILLING_CANCEL_URL", "https://app.memorybridge.test/app/dashboard.html?billing=cancel")
     monkeypatch.setenv("BILLING_MODE", mode)
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_valid" if mode == "test" else "sk_live_valid")
     monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_valid")
@@ -47,6 +47,7 @@ def test_valid_live_mode_production_config_passes(monkeypatch):
         ("CORS_ALLOWED_ORIGINS", "http://app.memorybridge.test"),
         ("BILLING_SUCCESS_URL", "http://app.memorybridge.test/success"),
         ("BILLING_CANCEL_URL", "https://example.com/cancel"),
+        ("BILLING_SUCCESS_URL", "https://YOUR-STAGING-HOST/app/dashboard.html?billing=success"),
         ("STRIPE_WEBHOOK_SECRET", "not-a-webhook-secret"),
         ("STRIPE_PRICE_PRO", "not-a-price"),
     ],

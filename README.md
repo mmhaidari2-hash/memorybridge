@@ -19,6 +19,22 @@ The current development branch adds the commercial control plane on top of the h
 
 Stripe billing remains in Test Mode until the sandbox release gate in `docs/STRIPE_SANDBOX_RUNBOOK.md` is completed. A successful browser redirect never grants a paid plan; only a verified subscription webhook can change entitlement.
 
+The commercial UI already exists as same-origin pages under `/app`:
+
+- Landing: `/app/landing.html`
+- Onboarding: `/app/onboarding.html`
+- Dashboard: `/app/dashboard.html`
+
+## Customer access model
+
+These three states are different and should not be collapsed:
+
+1. **Existing-customer onboarding.** `/app/onboarding.html` verifies an already-provisioned workspace API key, then performs the real first-memory store/recall activation before sending the customer to the Dashboard.
+2. **Operator bootstrap.** The first tenant, workspace, and workspace API key must currently be provisioned operationally with `scripts/bootstrap_workspace.py`. That CLI is not an HTTP route.
+3. **Public self-service signup.** This does **not** currently exist. Landing CTAs route to onboarding, which requires a key that already exists.
+
+Do not treat a hosted landing page as proof that a customer can create their own workspace.
+
 ## Security model
 
 - Memory summaries are encrypted with AES-256-GCM before database storage.
@@ -34,7 +50,7 @@ MemoryBridge is **not currently a zero-knowledge or end-to-end encrypted system*
 
 ## Five-minute developer path
 
-The hosted customer flow will provision a workspace API key. For local/self-hosted development, configure the service first using `.env.example`, run migrations, and start the API.
+This path assumes a workspace API key already exists. An operator must bootstrap the first key; the product does not currently offer public signup. For local/self-hosted development, configure the service using `.env.example`, run migrations, start the API, then create the first workspace with the operator CLI.
 
 ### 1. Start the service
 
@@ -55,6 +71,14 @@ curl http://localhost:8000/ready
 ```
 
 Never commit production credentials, Stripe secrets, API keys, database credentials, or encryption keys.
+
+Create the first workspace only after migrations succeed:
+
+```bash
+python scripts/bootstrap_workspace.py --tenant-name "Staging Tenant" --workspace-name "Staging Workspace"
+```
+
+The CLI prints the plaintext workspace API key once after a successful commit. Store it as an operator secret; it is not written to the database.
 
 ### 2. Connect with Python
 
@@ -233,12 +257,13 @@ MemoryBridge does not currently claim zero-knowledge encryption, end-to-end encr
 
 ## Near-term path to market
 
-1. Pass deployed Stripe Test Mode end-to-end.
-2. Finish the customer dashboard and self-serve onboarding surface.
-3. Validate the five-minute integration path with external developers.
-4. Publish clear pricing only after cost and willingness-to-pay validation.
-5. Recruit a small private beta and measure activation, repeated use, conversion, and retention.
-6. Enable Live Mode only after the commercial release gate passes.
+1. Deploy staging, apply migrations, and operator-bootstrap the first workspace.
+2. Complete Landing → Onboarding → first successful memory → Dashboard on the deployed host.
+3. Pass Stripe Test Mode checkout and a genuine signed webhook entitlement cycle.
+4. Validate the five-minute integration path with a provisioned workspace key.
+5. Publish clear pricing only after cost and willingness-to-pay validation.
+6. Recruit a small private beta and measure activation, repeated use, conversion, and retention.
+7. Enable Live Mode only after the commercial release gate passes.
 
 ## License
 

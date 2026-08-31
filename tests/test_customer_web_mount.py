@@ -17,6 +17,9 @@ def test_landing_is_served_by_api_process():
     assert response.status_code == 200
     assert "MemoryBridge" in response.text
     assert 'href="onboarding.html"' in response.text
+    assert "../README.md" not in response.text
+    assert "github.com/mmhaidari2-hash/memorybridge" in response.text
+    assert client.get("/README.md").status_code == 404
 
 
 def test_onboarding_and_dashboard_are_same_origin_assets():

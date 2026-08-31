@@ -27,8 +27,8 @@ Set these protected environment variables on the deployed API:
 STRIPE_SECRET_KEY=sk_test_...
 STRIPE_PRICE_PRO=price_...
 STRIPE_PRICE_TEAM=price_...
-BILLING_SUCCESS_URL=https://YOUR-APP.example/billing/success
-BILLING_CANCEL_URL=https://YOUR-APP.example/billing/cancel
+BILLING_SUCCESS_URL=https://YOUR-STAGING-HOST/app/dashboard.html?billing=success
+BILLING_CANCEL_URL=https://YOUR-STAGING-HOST/app/dashboard.html?billing=cancel
 ```
 
 Do not set `STRIPE_WEBHOOK_SECRET` until the webhook endpoint is created in step 4.
@@ -55,7 +55,7 @@ The billing migration must exist before webhook traffic begins.
 In Stripe Test Mode create a webhook destination pointing to:
 
 ```text
-https://YOUR-API.example/v1/billing/webhook
+https://YOUR-STAGING-HOST/v1/billing/webhook
 ```
 
 Subscribe to the subscription lifecycle events handled by MemoryBridge, including:

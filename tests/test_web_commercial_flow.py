@@ -15,6 +15,8 @@ def test_landing_routes_new_customers_through_onboarding():
     # route new customers through workspace verification before dashboard use.
     assert html.count('href="onboarding.html"') >= 3
     assert 'href="dashboard.html"' not in html
+    assert "../README.md" not in html
+    assert "github.com/mmhaidari2-hash/memorybridge" in html
 
 
 def test_onboarding_verifies_real_memory_round_trip():

@@ -4,7 +4,7 @@ from urllib.parse import urlparse
 from app.security import get_aes_key
 
 
-PLACEHOLDER_MARKERS = ("REPLACE", "change-me", "example.com")
+PLACEHOLDER_MARKERS = ("REPLACE", "change-me", "example.com", "YOUR-STAGING-HOST", "YOUR-PRODUCTION-API")
 
 
 def _value(name: str) -> str:
