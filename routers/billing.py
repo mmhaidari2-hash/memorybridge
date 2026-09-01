@@ -146,9 +146,18 @@ async def stripe_webhook(request: Request, stripe_signature: str | None = Header
             tenant.subscription_status = status
             tenant.plan = plan if status in {"active", "trialing"} else "free"
         elif event_type == "invoice.payment_succeeded":
-            if tenant.plan not in {"pro", "team"}:
-                raise ValueError("Successful invoice has no established paid entitlement")
-            tenant.subscription_status = "active"
+            # Stripe does not guarantee webhook delivery order. A successful
+            # invoice may arrive before the subscription lifecycle event that
+            # establishes the paid plan. Record and acknowledge the invoice,
+            # but never let an invoice create paid entitlement by itself.
+            if tenant.plan in {"pro", "team"}:
+                tenant.subscription_status = "active"
+            else:
+                logger.info(
+                    "invoice_payment_recorded_pending_entitlement tenant_id=%s event_id=%s",
+                    tenant.id,
+                    event_id,
+                )
         elif event_type == "invoice.payment_failed":
             tenant.subscription_status = "past_due"
         elif event_type == "customer.subscription.deleted":
