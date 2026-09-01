@@ -147,6 +147,9 @@ activemq-data/
 # SageMath parsed files
 *.sage.py
 
+# Railway local link metadata
+.railway/
+
 # Environments
 .env
 .envrc

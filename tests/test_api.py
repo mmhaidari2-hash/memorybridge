@@ -19,6 +19,7 @@ os.environ.setdefault("SERVICE_API_KEYS", SERVICE_API_KEY)
 from app.database import Base, get_db
 from app.models import MemoryRecord, User
 from app.security import hash_token
+from app.service_auth import get_legacy_service_key_hashes
 from main import app
 
 TEST_DATABASE_URL = "sqlite://"
@@ -44,6 +45,9 @@ client = TestClient(app)
 
 
 def reset_database():
+    app.dependency_overrides[get_db] = override_get_db
+    os.environ["SERVICE_API_KEYS"] = SERVICE_API_KEY
+    get_legacy_service_key_hashes.cache_clear()
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
 
@@ -64,6 +68,7 @@ def test_health_is_public_and_has_security_headers():
 
 
 def test_readiness_checks_database_and_has_security_headers():
+    app.dependency_overrides[get_db] = override_get_db
     response = client.get("/ready")
     assert response.status_code == 200
     assert response.json() == {"status": "ready"}
@@ -71,6 +76,7 @@ def test_readiness_checks_database_and_has_security_headers():
 
 
 def test_v1_requires_service_api_key():
+    reset_database()
     response = client.post("/v1/auth/token", json={"full_name": "Blocked"})
     assert response.status_code == 401
     assert response.json()["detail"] == "Missing service API key"
@@ -78,6 +84,7 @@ def test_v1_requires_service_api_key():
 
 
 def test_v1_rejects_invalid_service_api_key():
+    reset_database()
     response = client.post(
         "/v1/auth/token",
         json={"full_name": "Blocked"},
