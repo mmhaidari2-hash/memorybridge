@@ -91,14 +91,27 @@ def test_invoice_success_syncs_known_paid_subscription(monkeypatch):
     with TestingSessionLocal() as db:
         t=db.get(Tenant,tenant_id); assert t.plan=="pro"; assert t.subscription_status=="active"
 
-def test_invoice_success_cannot_create_paid_entitlement(monkeypatch):
+def test_invoice_success_before_subscription_is_acknowledged_without_entitlement(monkeypatch):
     reset_database(); tenant_id,_=seed_tenant()
     with TestingSessionLocal() as db:
         t=db.get(Tenant,tenant_id); t.stripe_subscription_id="sub_free"; db.commit()
     e={"id":"evt_invoice_free","type":"invoice.payment_succeeded","data":{"object":{"subscription":"sub_free"}}}
-    response=post_event(monkeypatch,e); assert response.status_code==400
+    response=post_event(monkeypatch,e); assert response.status_code==200
     with TestingSessionLocal() as db:
-        assert db.get(Tenant,tenant_id).plan=="free"; assert db.query(BillingEvent).filter_by(provider_event_id="evt_invoice_free").count()==0
+        t=db.get(Tenant,tenant_id); assert t.plan=="free"; assert t.subscription_status is None; assert db.query(BillingEvent).filter_by(provider_event_id="evt_invoice_free").count()==1
+
+def test_invoice_then_subscription_event_grants_entitlement_only_on_subscription(monkeypatch):
+    reset_database(); tenant_id,_=seed_tenant()
+    with TestingSessionLocal() as db:
+        t=db.get(Tenant,tenant_id); t.stripe_subscription_id="sub_ordered"; db.commit()
+    invoice={"id":"evt_invoice_first","type":"invoice.payment_succeeded","data":{"object":{"subscription":"sub_ordered"}}}
+    assert post_event(monkeypatch,invoice).status_code==200
+    with TestingSessionLocal() as db:
+        t=db.get(Tenant,tenant_id); assert t.plan=="free"; assert t.subscription_status is None
+    subscription=event("evt_sub_second","customer.subscription.created",tenant_id,id="sub_ordered",customer="cus_ordered",status="active")
+    assert post_event(monkeypatch,subscription).status_code==200
+    with TestingSessionLocal() as db:
+        t=db.get(Tenant,tenant_id); assert t.plan=="pro"; assert t.subscription_status=="active"; assert db.query(BillingEvent).filter(BillingEvent.provider_event_id.in_(["evt_invoice_first","evt_sub_second"])).count()==2
 
 def test_payment_failure_never_grants_access(monkeypatch):
     reset_database(); tenant_id,_=seed_tenant()
