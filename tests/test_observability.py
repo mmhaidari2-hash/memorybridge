@@ -2,14 +2,18 @@ import base64
 import logging
 import os
 
-from fastapi.testclient import TestClient
-
 os.environ.setdefault("DATABASE_URL", "sqlite://")
 os.environ.setdefault(
     "ENCRYPTION_KEY",
     base64.b64encode(b"x" * 32).decode("ascii"),
 )
-os.environ.setdefault("SERVICE_API_KEYS", "mbs_observability_test_key")
+os.environ.setdefault("SERVICE_API_KEYS", "mbs_observability_test_key_abcdef")
+os.environ.setdefault("TOKEN_HASH_PEPPER", base64.b64encode(b"o" * 32).decode("ascii"))
+
+from app.config import clear_settings_cache
+from fastapi.testclient import TestClient
+
+clear_settings_cache()
 
 from main import app
 

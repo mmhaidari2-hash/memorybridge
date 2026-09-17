@@ -1,42 +1,54 @@
+"""Cryptographic helpers: versioned AES-256-GCM, peppered token hashing."""
+
+from __future__ import annotations
+
 import base64
-import binascii
 import hashlib
+import hmac
 import os
+from typing import Optional, Tuple
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-
-def get_aes_key() -> bytes:
-    raw_key = os.getenv("ENCRYPTION_KEY")
-    if not raw_key:
-        raise RuntimeError("ENCRYPTION_KEY is required")
-
-    try:
-        key = base64.b64decode(raw_key, validate=True)
-    except (binascii.Error, ValueError) as exc:
-        raise RuntimeError("ENCRYPTION_KEY must be valid base64") from exc
-
-    if len(key) != 32:
-        raise RuntimeError("ENCRYPTION_KEY must decode to exactly 32 bytes")
-
-    return key
+from app.config import get_settings
 
 
 def hash_token(token: str) -> str:
     if not token:
         raise ValueError("Token must not be empty")
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+    pepper = get_settings().token_hash_pepper
+    return hmac.new(pepper, token.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
-def encrypt_text(plain_text: str) -> str:
-    aesgcm = AESGCM(get_aes_key())
+def _aad(tenant_id: str, user_id: str) -> bytes:
+    if not tenant_id or not user_id:
+        raise ValueError("tenant_id and user_id are required for encryption AAD")
+    return f"mb:v1:{tenant_id}:{user_id}".encode("utf-8")
+
+
+def encrypt_text(plain_text: str, *, tenant_id: str, user_id: str) -> Tuple[str, int]:
+    """Encrypt with the active key version. Returns (ciphertext_b64, key_version)."""
+    keyring = get_settings().keyring
+    version = keyring.active_version
+    key = keyring.get(version)
+    aesgcm = AESGCM(key)
     nonce = os.urandom(12)
-    ciphertext = aesgcm.encrypt(nonce, plain_text.encode("utf-8"), None)
-    return base64.b64encode(nonce + ciphertext).decode("ascii")
+    ciphertext = aesgcm.encrypt(nonce, plain_text.encode("utf-8"), _aad(tenant_id, user_id))
+    packed = base64.b64encode(nonce + ciphertext).decode("ascii")
+    return packed, version
 
 
-def decrypt_text(encrypted_b64: str) -> str:
-    aesgcm = AESGCM(get_aes_key())
+def decrypt_text(
+    encrypted_b64: str,
+    *,
+    tenant_id: str,
+    user_id: str,
+    key_version: Optional[int] = None,
+) -> str:
+    keyring = get_settings().keyring
+    version = key_version if key_version is not None else keyring.active_version
+    key = keyring.get(version)
+    aesgcm = AESGCM(key)
     data = base64.b64decode(encrypted_b64, validate=True)
 
     if len(data) < 13:
@@ -44,5 +56,5 @@ def decrypt_text(encrypted_b64: str) -> str:
 
     nonce = data[:12]
     ciphertext = data[12:]
-    decrypted = aesgcm.decrypt(nonce, ciphertext, None)
+    decrypted = aesgcm.decrypt(nonce, ciphertext, _aad(tenant_id, user_id))
     return decrypted.decode("utf-8")

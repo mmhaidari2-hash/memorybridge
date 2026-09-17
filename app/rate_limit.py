@@ -7,6 +7,8 @@ from typing import Deque, Dict
 
 from fastapi import HTTPException
 
+from app.config import get_settings
+
 
 @dataclass(frozen=True)
 class RateLimitConfig:
@@ -17,8 +19,8 @@ class RateLimitConfig:
 class InMemoryRateLimiter:
     """Process-local sliding-window limiter.
 
-    This backend is intentionally isolated behind a small interface so it can
-    later be replaced by Redis without changing the public API contract.
+    Isolated behind a small interface so it can later be replaced by Redis
+    without changing the public API contract.
     """
 
     def __init__(self, config: RateLimitConfig):
@@ -45,21 +47,22 @@ class InMemoryRateLimiter:
 
             bucket.append(now)
 
+    def reset(self) -> None:
+        with self._lock:
+            self._events.clear()
+
 
 def get_rate_limit_config() -> RateLimitConfig:
-    raw_requests = os.getenv("RATE_LIMIT_REQUESTS", "120")
-    raw_window = os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60")
-
-    try:
-        requests = int(raw_requests)
-        window_seconds = int(raw_window)
-    except ValueError as exc:
-        raise RuntimeError("Rate limit settings must be integers") from exc
-
-    if requests <= 0 or window_seconds <= 0:
-        raise RuntimeError("Rate limit settings must be positive")
-
-    return RateLimitConfig(requests=requests, window_seconds=window_seconds)
+    settings = get_settings()
+    return RateLimitConfig(
+        requests=settings.rate_limit.requests,
+        window_seconds=settings.rate_limit.window_seconds,
+    )
 
 
-rate_limiter = InMemoryRateLimiter(get_rate_limit_config())
+def build_rate_limiter() -> InMemoryRateLimiter:
+    return InMemoryRateLimiter(get_rate_limit_config())
+
+
+# Constructed at import once settings env is available.
+rate_limiter = build_rate_limiter()
