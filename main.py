@@ -1,8 +1,10 @@
-from fastapi import FastAPI, Response
-from fastapi.responses import PlainTextResponse
+from pathlib import Path
+
+from fastapi import Depends, FastAPI, Response
+from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.orm import Session
-from fastapi import Depends
 
 from app.config import get_settings
 from app.database import get_db
@@ -14,6 +16,8 @@ from routers import admin, auth, billing, memory
 
 # Fail closed on boot if required security configuration is missing.
 get_settings()
+
+WEB_DIST = Path(__file__).resolve().parent / "web" / "dist"
 
 app = FastAPI(
     title="MemoryBridge API",
@@ -28,15 +32,6 @@ app.include_router(auth.router, prefix="/v1")
 app.include_router(memory.router, prefix="/v1")
 app.include_router(billing.router, prefix="/v1")
 app.include_router(admin.router, prefix="/v1")
-
-
-@app.get("/")
-def read_root():
-    return {
-        "status": "ok",
-        "service": "memorybridge",
-        "version": "0.4.0-dev",
-    }
 
 
 @app.get("/health")
@@ -61,3 +56,39 @@ def prometheus_metrics():
     if not settings.metrics_enabled:
         return Response(status_code=404)
     return PlainTextResponse(metrics.render_prometheus(), media_type="text/plain; version=0.0.4")
+
+
+@app.get("/api")
+def api_root():
+    return {
+        "status": "ok",
+        "service": "memorybridge",
+        "version": "0.4.0-dev",
+    }
+
+
+if WEB_DIST.exists():
+    assets_dir = WEB_DIST / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="web-assets")
+
+    @app.get("/")
+    def marketing_home():
+        return FileResponse(WEB_DIST / "index.html")
+
+    @app.get("/favicon.svg")
+    def favicon():
+        path = WEB_DIST / "favicon.svg"
+        if path.exists():
+            return FileResponse(path)
+        return Response(status_code=404)
+else:
+
+    @app.get("/")
+    def read_root():
+        return {
+            "status": "ok",
+            "service": "memorybridge",
+            "version": "0.4.0-dev",
+            "marketing": "Build the site with: cd web && npm install && npm run build",
+        }

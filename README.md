@@ -156,6 +156,20 @@ mb.delete(user_token, session_token)
 
 Treat service, admin, user, and session credentials as secrets. Losing a session token means the current secure API cannot recover that token from the database because only its hash is stored. `memory/list` therefore returns metadata IDs, not recoverable session tokens.
 
+## Marketing website
+
+The sales site lives in `web/` (Vite + React).
+
+```bash
+cd web
+npm install
+npm run dev      # local preview
+npm run build    # writes web/dist — served by FastAPI at /
+```
+
+After `npm run build`, running the API also serves the landing page at `/`.
+API identity remains at `/api`, `/health`, `/ready`, and `/v1/*`.
+
 ## How you make money
 
 MemoryBridge ships a billing layer:
