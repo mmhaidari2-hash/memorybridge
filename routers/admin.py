@@ -5,6 +5,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.audit import record_audit
+from app.billing import assign_plan, ensure_subscription, get_billing_snapshot
 from app.config import api_key_prefix, hash_service_api_key
 from app.database import get_db
 from app.models import ServiceApiKey, Tenant, utc_now
@@ -12,6 +13,8 @@ from app.schemas import (
     ApiKeyCreate,
     ApiKeyCreatedResponse,
     ApiKeyResponse,
+    AssignPlanRequest,
+    BillingStatusResponse,
     TenantCreate,
     TenantResponse,
 )
@@ -34,6 +37,7 @@ def create_tenant(
         db.rollback()
         raise HTTPException(status_code=409, detail="Tenant slug already exists") from None
     db.refresh(tenant)
+    ensure_subscription(db, tenant.id, plan_code="free")
 
     record_audit(
         db,
@@ -174,3 +178,29 @@ def suspend_tenant(
         slug=tenant.slug,
         status=tenant.status,
     )
+
+
+@router.post("/tenants/{tenant_id}/plan", response_model=BillingStatusResponse)
+def assign_tenant_plan(
+    tenant_id: str,
+    payload: AssignPlanRequest,
+    db: Session = Depends(get_db),
+    _admin: str = Depends(verify_admin_api_key),
+):
+    """Assign a plan after Stripe payment OR offline/manual payment."""
+    tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    assign_plan(db, tenant_id, payload.plan_code, status="active")
+    record_audit(
+        db,
+        tenant_id=tenant_id,
+        actor_type="admin",
+        actor_id="admin",
+        action="admin.plan_assign",
+        outcome="success",
+        resource_type="plan",
+        resource_id=payload.plan_code,
+    )
+    return BillingStatusResponse(**get_billing_snapshot(db, tenant_id))

@@ -10,7 +10,7 @@ from app.http_security import SecurityHeadersMiddleware
 from app.metrics import metrics
 from app.observability import RequestLoggingMiddleware
 from app.request_limits import RequestSizeLimitMiddleware
-from routers import admin, auth, memory
+from routers import admin, auth, billing, memory
 
 # Fail closed on boot if required security configuration is missing.
 get_settings()
@@ -26,6 +26,7 @@ app.add_middleware(RequestSizeLimitMiddleware)
 
 app.include_router(auth.router, prefix="/v1")
 app.include_router(memory.router, prefix="/v1")
+app.include_router(billing.router, prefix="/v1")
 app.include_router(admin.router, prefix="/v1")
 
 

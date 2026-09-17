@@ -33,6 +33,17 @@ class Tenant(Base):
     api_keys = relationship("ServiceApiKey", back_populates="tenant", cascade="all, delete-orphan")
     memories = relationship("MemoryRecord", back_populates="tenant", cascade="all, delete-orphan")
     audit_events = relationship("AuditEvent", back_populates="tenant", cascade="all, delete-orphan")
+    subscription = relationship(
+        "TenantSubscription",
+        back_populates="tenant",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+    usage_counters = relationship(
+        "UsageCounter",
+        back_populates="tenant",
+        cascade="all, delete-orphan",
+    )
 
 
 class ServiceApiKey(Base):
@@ -131,3 +142,68 @@ class AuditEvent(Base):
     created_at = Column(DateTime, default=utc_now, nullable=False)
 
     tenant = relationship("Tenant", back_populates="audit_events")
+
+
+class Plan(Base):
+    """Sellable commercial plan with hard monthly quotas."""
+
+    __tablename__ = "plans"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    code = Column(String(64), unique=True, nullable=False, index=True)
+    name = Column(String(120), nullable=False)
+    monthly_price_cents = Column(Integer, nullable=False, default=0)
+    currency = Column(String(8), nullable=False, default="usd")
+    monthly_ops_limit = Column(Integer, nullable=False)
+    max_memories = Column(Integer, nullable=False)
+    stripe_price_id = Column(String(120), nullable=True)
+    is_public = Column(Integer, nullable=False, default=1)  # 1/0 for SQLite-friendly bool
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+
+    subscriptions = relationship("TenantSubscription", back_populates="plan")
+
+
+class TenantSubscription(Base):
+    __tablename__ = "tenant_subscriptions"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(
+        String,
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    plan_id = Column(String, ForeignKey("plans.id"), nullable=False, index=True)
+    status = Column(String(32), nullable=False, default="active")  # active|past_due|canceled
+    stripe_customer_id = Column(String(120), nullable=True, index=True)
+    stripe_subscription_id = Column(String(120), nullable=True, index=True)
+    current_period_start = Column(DateTime, nullable=False, default=utc_now)
+    current_period_end = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+    tenant = relationship("Tenant", back_populates="subscription")
+    plan = relationship("Plan", back_populates="subscriptions")
+
+
+class UsageCounter(Base):
+    """Monthly usage bucket per tenant. Period key format: YYYY-MM (UTC)."""
+
+    __tablename__ = "usage_counters"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "period_key", name="uq_usage_tenant_period"),
+    )
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(
+        String,
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    period_key = Column(String(7), nullable=False, index=True)
+    ops_count = Column(Integer, nullable=False, default=0)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+    tenant = relationship("Tenant", back_populates="usage_counters")

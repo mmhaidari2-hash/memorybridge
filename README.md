@@ -156,6 +156,29 @@ mb.delete(user_token, session_token)
 
 Treat service, admin, user, and session credentials as secrets. Losing a session token means the current secure API cannot recover that token from the database because only its hash is stored. `memory/list` therefore returns metadata IDs, not recoverable session tokens.
 
+## How you make money
+
+MemoryBridge ships a billing layer:
+
+| Plan | Price | Monthly ops | Max memories |
+|------|-------|-------------|--------------|
+| Free | $0 | 1,000 | 100 |
+| Starter | $49 | 50,000 | 10,000 |
+| Growth | $199 | 500,000 | 100,000 |
+
+- Over-quota API calls return **HTTP 402** with an upgrade hint
+- `GET /v1/billing/status` shows usage for the caller's tenant
+- `POST /v1/billing/checkout` opens Stripe Checkout (when configured)
+- `POST /v1/admin/tenants/{id}/plan` assigns a plan after offline payment
+- `POST /v1/billing/webhook` activates paid plans from Stripe events
+
+Sales flow:
+
+1. Create tenant + API key for the customer
+2. They start on Free and hit limits
+3. They pay via Stripe checkout **or** bank transfer + you assign `starter`/`growth`
+4. Quotas unlock automatically
+
 ## Multi-tenant sales model
 
 1. Create one tenant per customer company.

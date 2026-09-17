@@ -3,8 +3,8 @@ import os
 
 os.environ.setdefault("DATABASE_URL", "sqlite://")
 os.environ.setdefault("ENCRYPTION_KEY", base64.b64encode(b"x" * 32).decode("ascii"))
-os.environ.setdefault("SERVICE_API_KEYS", "mbs_security_test_key_abcdefghijklmnop")
-os.environ.setdefault("TOKEN_HASH_PEPPER", base64.b64encode(b"pepper-bytes-32-characters!!").decode("ascii"))
+os.environ.setdefault("SERVICE_API_KEYS", "mbs_test_service_key_abcdefghijklmnopqrstuvwxyz")
+os.environ.setdefault("TOKEN_HASH_PEPPER", base64.b64encode(b"p" * 32).decode("ascii"))
 
 from app.config import clear_settings_cache, get_settings
 from app.security import decrypt_text, encrypt_text, hash_token
@@ -76,7 +76,6 @@ def test_hash_token_is_deterministic_peppered_and_one_way():
     assert digest == hash_token(token)
     assert digest != token
     assert len(digest) == 64
-    # Must not equal unsalted SHA-256.
     import hashlib
 
     assert digest != hashlib.sha256(token.encode("utf-8")).hexdigest()

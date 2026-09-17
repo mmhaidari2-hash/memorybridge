@@ -96,3 +96,44 @@ class ApiKeyResponse(BaseModel):
     created_at: str
     revoked_at: Optional[str] = None
     last_used_at: Optional[str] = None
+
+
+class PlanInfo(BaseModel):
+    code: str
+    name: str
+    monthly_price_cents: int
+    currency: str
+    monthly_ops_limit: int
+    max_memories: int
+
+
+class BillingStatusResponse(BaseModel):
+    tenant_id: str
+    plan_code: str
+    plan_name: str
+    status: str
+    monthly_price_cents: int
+    currency: str
+    period_key: str
+    ops_used: int
+    ops_limit: int
+    ops_remaining: int
+    memories_used: int
+    memories_limit: int
+    memories_remaining: int
+    upgrade_required: bool
+
+
+class CheckoutRequest(BaseModel):
+    plan_code: str = Field(pattern=r"^(starter|growth)$")
+    customer_email: Optional[str] = Field(default=None, max_length=320)
+
+
+class CheckoutResponse(BaseModel):
+    checkout_url: str
+    session_id: str
+    plan_code: str
+
+
+class AssignPlanRequest(BaseModel):
+    plan_code: str = Field(pattern=r"^(free|starter|growth)$")

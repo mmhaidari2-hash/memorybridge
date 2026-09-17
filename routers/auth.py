@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.audit import record_audit
 from app.auth_context import AuthContext
+from app.billing import enforce_and_meter
 from app.database import get_db
 from app.metrics import metrics
 from app.models import User
@@ -22,7 +23,7 @@ def create_token(
     db: Session = Depends(get_db),
     auth: AuthContext = Depends(verify_service_api_key),
 ):
-    # Plaintext token is returned once and never stored.
+    enforce_and_meter(db, auth.tenant_id)
     user_token = f"mb_{secrets.token_urlsafe(32)}"
     db_user = User(
         tenant_id=auth.tenant_id,

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.audit import record_audit
 from app.auth_context import AuthContext
+from app.billing import enforce_and_meter
 from app.database import get_db
 from app.metrics import metrics
 from app.models import MemoryRecord, User
@@ -85,6 +86,7 @@ def store_memory(
     db: Session = Depends(get_db),
     auth: AuthContext = Depends(verify_service_api_key),
 ):
+    enforce_and_meter(db, auth.tenant_id, creating_memory=True)
     user = get_user(db, auth.tenant_id, payload.user_token)
     session_token = payload.session_token or f"sess_{secrets.token_urlsafe(24)}"
     session_hash = hash_token(session_token)
@@ -135,6 +137,7 @@ def recall_memory(
     db: Session = Depends(get_db),
     auth: AuthContext = Depends(verify_service_api_key),
 ):
+    enforce_and_meter(db, auth.tenant_id)
     user = get_user(db, auth.tenant_id, payload.user_token)
     record = get_memory(db, auth.tenant_id, user, payload.session_token)
 
@@ -168,6 +171,7 @@ def update_memory(
     if payload.summary is None and payload.stage is None:
         raise HTTPException(status_code=400, detail="Nothing to update")
 
+    enforce_and_meter(db, auth.tenant_id)
     user = get_user(db, auth.tenant_id, payload.user_token)
     record = get_memory(db, auth.tenant_id, user, payload.session_token)
 

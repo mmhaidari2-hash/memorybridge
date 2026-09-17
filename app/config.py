@@ -42,6 +42,13 @@ class Settings:
     default_tenant_slug: str
     max_request_bytes: int
     metrics_enabled: bool
+    stripe_secret_key: str | None
+    stripe_webhook_secret: str | None
+    stripe_price_starter: str | None
+    stripe_price_growth: str | None
+    public_base_url: str
+    billing_success_url: str | None
+    billing_cancel_url: str | None
 
 
 def _require(name: str) -> str:
@@ -195,6 +202,15 @@ def get_settings() -> Settings:
         max_request_bytes=_parse_max_request_bytes(),
         metrics_enabled=os.getenv("METRICS_ENABLED", "true").strip().lower()
         not in {"0", "false", "no"},
+        stripe_secret_key=os.getenv("STRIPE_SECRET_KEY", "").strip() or None,
+        stripe_webhook_secret=os.getenv("STRIPE_WEBHOOK_SECRET", "").strip() or None,
+        stripe_price_starter=os.getenv("STRIPE_PRICE_STARTER", "").strip() or None,
+        stripe_price_growth=os.getenv("STRIPE_PRICE_GROWTH", "").strip() or None,
+        public_base_url=(os.getenv("PUBLIC_BASE_URL", "http://localhost:8000").strip() or "http://localhost:8000").rstrip(
+            "/"
+        ),
+        billing_success_url=os.getenv("BILLING_SUCCESS_URL", "").strip() or None,
+        billing_cancel_url=os.getenv("BILLING_CANCEL_URL", "").strip() or None,
     )
 
 

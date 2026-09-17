@@ -1,19 +1,18 @@
 import base64
 import os
 
-# Configure fail-closed secrets before importing application modules.
 SERVICE_API_KEY = "mbs_test_service_key_abcdefghijklmnopqrstuvwxyz"
 ADMIN_API_KEY = "mba_test_admin_key_abcdefghijklmnopqrstuvwxyz012345"
 SERVICE_HEADERS = {"X-MemoryBridge-Key": SERVICE_API_KEY}
 ADMIN_HEADERS = {"X-MemoryBridge-Admin-Key": ADMIN_API_KEY}
 
-os.environ["DATABASE_URL"] = "sqlite://"
-os.environ["ENCRYPTION_KEY"] = base64.b64encode(b"x" * 32).decode("ascii")
-os.environ["SERVICE_API_KEYS"] = SERVICE_API_KEY
-os.environ["ADMIN_API_KEY"] = ADMIN_API_KEY
-os.environ["TOKEN_HASH_PEPPER"] = base64.b64encode(b"p" * 32).decode("ascii")
-os.environ["RATE_LIMIT_REQUESTS"] = "1000"
-os.environ["RATE_LIMIT_WINDOW_SECONDS"] = "60"
+os.environ.setdefault("DATABASE_URL", "sqlite://")
+os.environ.setdefault("ENCRYPTION_KEY", base64.b64encode(b"x" * 32).decode("ascii"))
+os.environ.setdefault("SERVICE_API_KEYS", SERVICE_API_KEY)
+os.environ.setdefault("ADMIN_API_KEY", ADMIN_API_KEY)
+os.environ.setdefault("TOKEN_HASH_PEPPER", base64.b64encode(b"p" * 32).decode("ascii"))
+os.environ.setdefault("RATE_LIMIT_REQUESTS", "1000")
+os.environ.setdefault("RATE_LIMIT_WINDOW_SECONDS", "60")
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -53,6 +52,7 @@ client = TestClient(app)
 
 
 def reset_database():
+    app.dependency_overrides[get_db] = override_get_db
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     rate_limiter.reset()

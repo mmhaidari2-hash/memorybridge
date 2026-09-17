@@ -103,8 +103,25 @@ class MemoryBridgeClient:
         resp.raise_for_status()
         return resp.json()
 
+    def billing_status(self) -> Dict[str, Any]:
+        resp = requests.get(
+            f"{self.base_url}/v1/billing/status",
+            headers=self._headers,
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
 
-class MemoryBridgeAdminClient:
+    def create_checkout(self, plan_code: str, customer_email: Optional[str] = None) -> Dict[str, Any]:
+        resp = requests.post(
+            f"{self.base_url}/v1/billing/checkout",
+            json={"plan_code": plan_code, "customer_email": customer_email},
+            headers=self._headers,
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     def __init__(self, base_url: str, admin_api_key: str, timeout: int = 10):
         if not admin_api_key:
             raise ValueError("admin_api_key is required")
@@ -144,6 +161,16 @@ class MemoryBridgeAdminClient:
     def suspend_tenant(self, tenant_id: str) -> Dict[str, Any]:
         resp = requests.post(
             f"{self.base_url}/v1/admin/tenants/{tenant_id}/suspend",
+            headers=self._headers,
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def assign_plan(self, tenant_id: str, plan_code: str) -> Dict[str, Any]:
+        resp = requests.post(
+            f"{self.base_url}/v1/admin/tenants/{tenant_id}/plan",
+            json={"plan_code": plan_code},
             headers=self._headers,
             timeout=self.timeout,
         )
