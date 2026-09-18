@@ -1,4 +1,8 @@
+import re
+import secrets
+
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.audit import record_audit
@@ -10,18 +14,51 @@ from app.billing import (
     get_billing_snapshot,
     get_plan_by_code,
 )
+from app.config import api_key_prefix, get_settings, hash_service_api_key
 from app.database import get_db
-from app.models import Plan, Tenant
+from app.models import Plan, ServiceApiKey, Tenant
+from app.rate_limit import rate_limiter
 from app.schemas import (
+    BillingConfigResponse,
     BillingStatusResponse,
     CheckoutRequest,
     CheckoutResponse,
     PlanInfo,
+    SignupRequest,
+    SignupResponse,
 )
 from app.service_auth import verify_service_api_key
 from app import stripe_billing
 
 router = APIRouter(tags=["Billing"])
+
+RESERVED_SLUGS = frozenset(
+    {
+        "default",
+        "admin",
+        "api",
+        "www",
+        "billing",
+        "health",
+        "ready",
+        "metrics",
+        "assets",
+        "v1",
+    }
+)
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+@router.get("/billing/config", response_model=BillingConfigResponse)
+def billing_config():
+    settings = get_settings()
+    return BillingConfigResponse(
+        stripe_enabled=stripe_billing.stripe_enabled()
+        and bool(settings.stripe_price_starter)
+        and bool(settings.stripe_price_growth),
+        public_plans=["free", "starter", "growth"],
+        signup_enabled=True,
+    )
 
 
 @router.get("/billing/plans", response_model=list[PlanInfo])
@@ -46,6 +83,98 @@ def list_public_plans(db: Session = Depends(get_db)):
     ]
 
 
+@router.post("/billing/signup", response_model=SignupResponse, status_code=201)
+def signup(payload: SignupRequest, request: Request, db: Session = Depends(get_db)):
+    """Public self-serve signup: create tenant + API key, optionally start Stripe Checkout."""
+    client_host = request.client.host if request.client else "unknown"
+    rate_limiter.check(f"signup:{client_host}")
+
+    if payload.slug in RESERVED_SLUGS:
+        raise HTTPException(status_code=400, detail="Slug is reserved")
+    if not EMAIL_RE.match(payload.email):
+        raise HTTPException(status_code=400, detail="Invalid email")
+
+    ensure_plans(db)
+
+    wants_paid = payload.plan_code in {"starter", "growth"}
+    if wants_paid:
+        plan = get_plan_by_code(db, payload.plan_code)
+        if not stripe_billing.stripe_enabled() or not plan.stripe_price_id:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "card_payments_not_configured",
+                    "message": "Card checkout is not configured yet. Choose Free, or ask an admin to assign a paid plan offline.",
+                },
+            )
+
+    tenant = Tenant(name=payload.company_name, slug=payload.slug, status="active")
+    db.add(tenant)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Company slug already exists") from None
+    db.refresh(tenant)
+
+    # Always start on Free until Stripe confirms payment (or stay Free).
+    ensure_subscription(db, tenant.id, plan_code="free")
+
+    plaintext_key = f"mbs_{secrets.token_urlsafe(32)}"
+    key = ServiceApiKey(
+        tenant_id=tenant.id,
+        name="default",
+        key_prefix=api_key_prefix(plaintext_key),
+        key_hash=hash_service_api_key(plaintext_key),
+        status="active",
+    )
+    db.add(key)
+    db.commit()
+    db.refresh(key)
+
+    checkout_url = None
+    session_id = None
+    message = "Tenant created on Free plan. Store your API key now — it will not be shown again."
+
+    if wants_paid:
+        plan = get_plan_by_code(db, payload.plan_code)
+        session = stripe_billing.create_checkout_session(
+            tenant_id=tenant.id,
+            tenant_slug=tenant.slug,
+            plan_code=plan.code,
+            stripe_price_id=plan.stripe_price_id,
+            customer_email=payload.email,
+        )
+        checkout_url = session["checkout_url"]
+        session_id = session["session_id"]
+        message = (
+            "Tenant created. Complete card checkout to activate the paid plan. "
+            "Your API key works now on Free limits until payment succeeds."
+        )
+
+    record_audit(
+        db,
+        tenant_id=tenant.id,
+        actor_type="signup",
+        actor_id=payload.email[:64],
+        action="billing.signup",
+        outcome="success",
+        resource_type="tenant",
+        resource_id=tenant.id,
+        request_id=request.headers.get("X-Request-ID"),
+    )
+
+    return SignupResponse(
+        tenant_id=tenant.id,
+        slug=tenant.slug,
+        plan_code="free" if not wants_paid else payload.plan_code,
+        api_key=plaintext_key,
+        checkout_url=checkout_url,
+        session_id=session_id,
+        message=message,
+    )
+
+
 @router.get("/billing/status", response_model=BillingStatusResponse)
 def billing_status(
     db: Session = Depends(get_db),
@@ -63,12 +192,12 @@ def create_checkout(
     auth: AuthContext = Depends(verify_service_api_key),
 ):
     plan = get_plan_by_code(db, payload.plan_code)
-    if not plan.stripe_price_id:
+    if not plan.stripe_price_id or not stripe_billing.stripe_enabled():
         raise HTTPException(
             status_code=503,
             detail={
-                "error": "price_not_configured",
-                "message": f"Plan '{plan.code}' has no Stripe price ID configured.",
+                "error": "card_payments_not_configured",
+                "message": f"Plan '{plan.code}' card checkout is not configured.",
             },
         )
 
@@ -136,7 +265,6 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
         subscription = event["data"]["object"]
         tenant_id = (subscription.get("metadata") or {}).get("tenant_id")
         if tenant_id:
-            # Fall back to free tier so the product keeps working at free limits.
             assign_plan(db, tenant_id, "free", status="active")
             record_audit(
                 db,

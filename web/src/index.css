@@ -454,6 +454,62 @@ svg {
   border-top: 1px solid var(--line);
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(7, 16, 24, 0.55);
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+
+.modal {
+  width: min(440px, 100%);
+  background: #fff;
+  border-radius: var(--radius);
+  padding: 1.4rem 1.25rem 1.25rem;
+  box-shadow: 0 24px 60px rgba(7, 16, 24, 0.25);
+}
+
+.modal h3 {
+  margin: 0 0 0.4rem;
+  font-family: var(--font-display);
+  letter-spacing: -0.02em;
+}
+
+.modal p {
+  margin: 0 0 1rem;
+  color: var(--muted);
+}
+
+.signup-form,
+.signup-result {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.signup-form label,
+.signup-result label {
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.signup-form input,
+.signup-result input {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.7rem 0.75rem;
+  font: inherit;
+}
+
+.form-error {
+  color: #a11f2c !important;
+  margin: 0 !important;
+}
+
 @keyframes streamFlow {
   to {
     stroke-dashoffset: -220;

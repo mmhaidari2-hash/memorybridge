@@ -168,7 +168,10 @@ npm run build    # writes web/dist — served by FastAPI at /
 ```
 
 After `npm run build`, running the API also serves the landing page at `/`.
+Public self-serve signup: `POST /v1/billing/signup` (also used by the website modal).
 API identity remains at `/api`, `/health`, `/ready`, and `/v1/*`.
+
+See `GO_LIVE.md` for the human-only launch checklist (Stripe account, domain, server, bank).
 
 ## How you make money
 

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
@@ -27,6 +28,12 @@ app = FastAPI(
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(RequestSizeLimitMiddleware)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET", "POST", "PUT", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 app.include_router(auth.router, prefix="/v1")
 app.include_router(memory.router, prefix="/v1")
@@ -67,6 +74,10 @@ def api_root():
     }
 
 
+def _spa_index():
+    return FileResponse(WEB_DIST / "index.html")
+
+
 if WEB_DIST.exists():
     assets_dir = WEB_DIST / "assets"
     if assets_dir.exists():
@@ -74,7 +85,15 @@ if WEB_DIST.exists():
 
     @app.get("/")
     def marketing_home():
-        return FileResponse(WEB_DIST / "index.html")
+        return _spa_index()
+
+    @app.get("/billing/success")
+    def billing_success_page():
+        return _spa_index()
+
+    @app.get("/billing/cancel")
+    def billing_cancel_page():
+        return _spa_index()
 
     @app.get("/favicon.svg")
     def favicon():

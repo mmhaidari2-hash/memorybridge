@@ -144,3 +144,48 @@ def test_checkout_requires_stripe_configuration():
         headers=SERVICE_HEADERS,
     )
     assert response.status_code == 503
+
+
+def test_public_signup_creates_tenant_and_api_key():
+    reset_database()
+    response = client.post(
+        "/v1/billing/signup",
+        json={
+            "company_name": "Nova AI",
+            "slug": "nova-ai",
+            "email": "founder@nova.ai",
+            "plan_code": "free",
+        },
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["api_key"].startswith("mbs_")
+    assert body["checkout_url"] is None
+
+    # Key works immediately
+    headers = {"X-MemoryBridge-Key": body["api_key"]}
+    token = client.post("/v1/auth/token", json={}, headers=headers)
+    assert token.status_code == 201
+
+
+def test_paid_signup_without_stripe_is_rejected_clearly():
+    reset_database()
+    response = client.post(
+        "/v1/billing/signup",
+        json={
+            "company_name": "Pay Co",
+            "slug": "pay-co",
+            "email": "a@pay.co",
+            "plan_code": "starter",
+        },
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"]["error"] == "card_payments_not_configured"
+
+
+def test_billing_config_endpoint():
+    reset_database()
+    response = client.get("/v1/billing/config")
+    assert response.status_code == 200
+    assert response.json()["signup_enabled"] is True
+    assert response.json()["stripe_enabled"] is False

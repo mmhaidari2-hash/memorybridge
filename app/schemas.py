@@ -137,3 +137,26 @@ class CheckoutResponse(BaseModel):
 
 class AssignPlanRequest(BaseModel):
     plan_code: str = Field(pattern=r"^(free|starter|growth)$")
+
+
+class SignupRequest(BaseModel):
+    company_name: str = Field(min_length=2, max_length=200)
+    slug: str = Field(min_length=2, max_length=100, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+    email: str = Field(min_length=5, max_length=320)
+    plan_code: str = Field(default="free", pattern=r"^(free|starter|growth)$")
+
+
+class SignupResponse(BaseModel):
+    tenant_id: str
+    slug: str
+    plan_code: str
+    api_key: str
+    checkout_url: Optional[str] = None
+    session_id: Optional[str] = None
+    message: str
+
+
+class BillingConfigResponse(BaseModel):
+    stripe_enabled: bool
+    public_plans: list[str]
+    signup_enabled: bool
