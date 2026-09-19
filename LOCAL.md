@@ -1,6 +1,6 @@
 # Local laptop bring-up (free)
 
-## Fastest way
+## Fastest way (Mac / Linux)
 
 ```bash
 git clone https://github.com/mmhaidari2-hash/memorybridge.git
@@ -10,7 +10,16 @@ chmod +x scripts/dev_up.sh
 ./scripts/dev_up.sh
 ```
 
-Then open: **http://localhost:8000**
+## Fastest way (Windows PowerShell)
+
+```powershell
+git clone https://github.com/mmhaidari2-hash/memorybridge.git
+cd memorybridge
+git checkout cursor/v04-commercial-foundation-9c9c
+powershell -ExecutionPolicy Bypass -File .\scripts\dev_up.ps1
+```
+
+Then open on the **same laptop browser** (not phone): **http://localhost:8000**
 
 What the script does:
 1. Creates `.env` with SQLite (no Postgres needed)
