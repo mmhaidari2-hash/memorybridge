@@ -13,6 +13,8 @@ down_revision = "0001_secure_foundation"
 branch_labels = None
 depends_on = None
 
+DEFAULT_TENANT_ID = "00000000-0000-4000-8000-000000000001"
+
 
 def upgrade() -> None:
     op.create_table(
@@ -59,83 +61,85 @@ def upgrade() -> None:
     op.create_index("ix_audit_events_tenant_id", "audit_events", ["tenant_id"])
     op.create_index("ix_audit_tenant_created", "audit_events", ["tenant_id", "created_at"])
 
-    # Seed a default tenant and backfill existing rows.
     op.execute(
         sa.text(
             "INSERT INTO tenants (id, name, slug, status, created_at) "
-            "VALUES ('00000000-0000-4000-8000-000000000001', 'Default Tenant', 'default', 'active', CURRENT_TIMESTAMP)"
+            f"VALUES ('{DEFAULT_TENANT_ID}', 'Default Tenant', 'default', 'active', CURRENT_TIMESTAMP)"
         )
     )
 
-    op.add_column("users", sa.Column("tenant_id", sa.String(), nullable=True))
+    with op.batch_alter_table("users") as batch_op:
+        batch_op.add_column(sa.Column("tenant_id", sa.String(), nullable=True))
+
     op.execute(
         sa.text(
-            "UPDATE users SET tenant_id = '00000000-0000-4000-8000-000000000001' "
-            "WHERE tenant_id IS NULL"
+            f"UPDATE users SET tenant_id = '{DEFAULT_TENANT_ID}' WHERE tenant_id IS NULL"
         )
-    )
-    op.alter_column("users", "tenant_id", existing_type=sa.String(), nullable=False)
-    op.create_foreign_key(
-        "fk_users_tenant_id",
-        "users",
-        "tenants",
-        ["tenant_id"],
-        ["id"],
-        ondelete="CASCADE",
-    )
-    op.create_index("ix_users_tenant_id", "users", ["tenant_id"])
-    op.drop_index("ix_users_user_token_hash", table_name="users")
-    op.create_index("ix_users_user_token_hash", "users", ["user_token_hash"], unique=False)
-    op.create_unique_constraint(
-        "uq_users_tenant_token_hash",
-        "users",
-        ["tenant_id", "user_token_hash"],
     )
 
-    op.add_column("memory_records", sa.Column("tenant_id", sa.String(), nullable=True))
-    op.add_column(
-        "memory_records",
-        sa.Column("key_version", sa.Integer(), nullable=False, server_default="1"),
-    )
+    with op.batch_alter_table("users") as batch_op:
+        batch_op.alter_column("tenant_id", existing_type=sa.String(), nullable=False)
+        batch_op.create_foreign_key(
+            "fk_users_tenant_id",
+            "tenants",
+            ["tenant_id"],
+            ["id"],
+            ondelete="CASCADE",
+        )
+        batch_op.create_index("ix_users_tenant_id", ["tenant_id"])
+        batch_op.drop_index("ix_users_user_token_hash")
+        batch_op.create_index("ix_users_user_token_hash", ["user_token_hash"], unique=False)
+        batch_op.create_unique_constraint(
+            "uq_users_tenant_token_hash",
+            ["tenant_id", "user_token_hash"],
+        )
+
+    with op.batch_alter_table("memory_records") as batch_op:
+        batch_op.add_column(sa.Column("tenant_id", sa.String(), nullable=True))
+        batch_op.add_column(
+            sa.Column("key_version", sa.Integer(), nullable=False, server_default="1")
+        )
+
     op.execute(
         sa.text(
-            "UPDATE memory_records SET tenant_id = '00000000-0000-4000-8000-000000000001' "
-            "WHERE tenant_id IS NULL"
+            f"UPDATE memory_records SET tenant_id = '{DEFAULT_TENANT_ID}' WHERE tenant_id IS NULL"
         )
     )
-    op.alter_column("memory_records", "tenant_id", existing_type=sa.String(), nullable=False)
-    op.create_foreign_key(
-        "fk_memory_records_tenant_id",
-        "memory_records",
-        "tenants",
-        ["tenant_id"],
-        ["id"],
-        ondelete="CASCADE",
-    )
-    op.create_index("ix_memory_records_tenant_id", "memory_records", ["tenant_id"])
-    op.create_index("ix_memory_tenant_user", "memory_records", ["tenant_id", "user_id"])
-    op.create_unique_constraint(
-        "uq_memory_tenant_user_session",
-        "memory_records",
-        ["tenant_id", "user_id", "session_token_hash"],
-    )
-    op.alter_column("memory_records", "key_version", server_default=None)
+
+    with op.batch_alter_table("memory_records") as batch_op:
+        batch_op.alter_column("tenant_id", existing_type=sa.String(), nullable=False)
+        batch_op.create_foreign_key(
+            "fk_memory_records_tenant_id",
+            "tenants",
+            ["tenant_id"],
+            ["id"],
+            ondelete="CASCADE",
+        )
+        batch_op.create_index("ix_memory_records_tenant_id", ["tenant_id"])
+        batch_op.create_index("ix_memory_tenant_user", ["tenant_id", "user_id"])
+        batch_op.create_unique_constraint(
+            "uq_memory_tenant_user_session",
+            ["tenant_id", "user_id", "session_token_hash"],
+        )
+        batch_op.alter_column("key_version", server_default=None)
 
 
 def downgrade() -> None:
-    op.drop_constraint("uq_memory_tenant_user_session", "memory_records", type_="unique")
-    op.drop_index("ix_memory_tenant_user", table_name="memory_records")
-    op.drop_index("ix_memory_records_tenant_id", table_name="memory_records")
-    op.drop_constraint("fk_memory_records_tenant_id", "memory_records", type_="foreignkey")
-    op.drop_column("memory_records", "key_version")
-    op.drop_column("memory_records", "tenant_id")
+    with op.batch_alter_table("memory_records") as batch_op:
+        batch_op.drop_constraint("uq_memory_tenant_user_session", type_="unique")
+        batch_op.drop_index("ix_memory_tenant_user")
+        batch_op.drop_index("ix_memory_records_tenant_id")
+        batch_op.drop_constraint("fk_memory_records_tenant_id", type_="foreignkey")
+        batch_op.drop_column("key_version")
+        batch_op.drop_column("tenant_id")
 
-    op.drop_constraint("uq_users_tenant_token_hash", "users", type_="unique")
-    op.drop_index("ix_users_tenant_id", table_name="users")
-    op.drop_constraint("fk_users_tenant_id", "users", type_="foreignkey")
-    op.drop_index("ix_users_user_token_hash", table_name="users")
-    op.create_index("ix_users_user_token_hash", "users", ["user_token_hash"], unique=True)
-    op.drop_column("users", "tenant_id")
+    with op.batch_alter_table("users") as batch_op:
+        batch_op.drop_constraint("uq_users_tenant_token_hash", type_="unique")
+        batch_op.drop_index("ix_users_tenant_id")
+        batch_op.drop_constraint("fk_users_tenant_id", type_="foreignkey")
+        batch_op.drop_index("ix_users_user_token_hash")
+        batch_op.create_index("ix_users_user_token_hash", ["user_token_hash"], unique=True)
+        batch_op.drop_column("tenant_id")
 
     op.drop_index("ix_audit_tenant_created", table_name="audit_events")
     op.drop_index("ix_audit_events_tenant_id", table_name="audit_events")
