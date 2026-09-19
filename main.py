@@ -1,34 +1,44 @@
+from pathlib import Path
+
 from fastapi import Depends, FastAPI, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.database import get_db
 from app.http_security import SecurityHeadersMiddleware
+from app.metrics import metrics
 from app.observability import RequestLoggingMiddleware
-from app.service_auth import verify_service_api_key
-from routers import auth
-from routers.routers import memory
+from app.request_limits import RequestSizeLimitMiddleware
+from routers import admin, auth, billing, memory
+
+# Fail closed on boot if required security configuration is missing.
+get_settings()
+
+WEB_DIST = Path(__file__).resolve().parent / "web" / "dist"
 
 app = FastAPI(
     title="MemoryBridge API",
-    version="0.3.0-dev",
-    description="Secure memory persistence layer for AI applications.",
+    version="0.4.0-dev",
+    description="Multi-tenant secure memory persistence layer for AI applications.",
 )
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
+app.add_middleware(RequestSizeLimitMiddleware)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET", "POST", "PUT", "OPTIONS"],
+    allow_headers=["*"],
+)
 
-protected_dependencies = [Depends(verify_service_api_key)]
-app.include_router(auth.router, prefix="/v1", dependencies=protected_dependencies)
-app.include_router(memory.router, prefix="/v1", dependencies=protected_dependencies)
-
-
-@app.get("/")
-def read_root():
-    return {
-        "status": "ok",
-        "service": "memorybridge",
-        "version": "0.3.0-dev",
-    }
+app.include_router(auth.router, prefix="/v1")
+app.include_router(memory.router, prefix="/v1")
+app.include_router(billing.router, prefix="/v1")
+app.include_router(admin.router, prefix="/v1")
 
 
 @app.get("/health")
@@ -45,3 +55,59 @@ def readiness(response: Response, db: Session = Depends(get_db)):
         return {"status": "not_ready"}
 
     return {"status": "ready"}
+
+
+@app.get("/metrics")
+def prometheus_metrics():
+    settings = get_settings()
+    if not settings.metrics_enabled:
+        return Response(status_code=404)
+    return PlainTextResponse(metrics.render_prometheus(), media_type="text/plain; version=0.0.4")
+
+
+@app.get("/api")
+def api_root():
+    return {
+        "status": "ok",
+        "service": "memorybridge",
+        "version": "0.4.0-dev",
+    }
+
+
+def _spa_index():
+    return FileResponse(WEB_DIST / "index.html")
+
+
+if WEB_DIST.exists():
+    assets_dir = WEB_DIST / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="web-assets")
+
+    @app.get("/")
+    def marketing_home():
+        return _spa_index()
+
+    @app.get("/billing/success")
+    def billing_success_page():
+        return _spa_index()
+
+    @app.get("/billing/cancel")
+    def billing_cancel_page():
+        return _spa_index()
+
+    @app.get("/favicon.svg")
+    def favicon():
+        path = WEB_DIST / "favicon.svg"
+        if path.exists():
+            return FileResponse(path)
+        return Response(status_code=404)
+else:
+
+    @app.get("/")
+    def read_root():
+        return {
+            "status": "ok",
+            "service": "memorybridge",
+            "version": "0.4.0-dev",
+            "marketing": "Build the site with: cd web && npm install && npm run build",
+        }

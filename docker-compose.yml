@@ -1,0 +1,43 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: memorybridge
+      POSTGRES_USER: memorybridge
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-now}
+    volumes:
+      - memorybridge_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U memorybridge -d memorybridge"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://memorybridge:${POSTGRES_PASSWORD:-change-me-now}@db:5432/memorybridge
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      TOKEN_HASH_PEPPER: ${TOKEN_HASH_PEPPER}
+      SERVICE_API_KEYS: ${SERVICE_API_KEYS}
+      ADMIN_API_KEY: ${ADMIN_API_KEY}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
+      BILLING_SUCCESS_URL: ${BILLING_SUCCESS_URL:-http://localhost:8000/billing/success}
+      BILLING_CANCEL_URL: ${BILLING_CANCEL_URL:-http://localhost:8000/billing/cancel}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_PRICE_STARTER: ${STRIPE_PRICE_STARTER:-}
+      STRIPE_PRICE_GROWTH: ${STRIPE_PRICE_GROWTH:-}
+      RATE_LIMIT_REQUESTS: ${RATE_LIMIT_REQUESTS:-120}
+      RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn main:app --host 0.0.0.0 --port 8000"
+
+volumes:
+  memorybridge_pg:

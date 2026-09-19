@@ -14,6 +14,11 @@ jobs:
       PYTHONPATH: .
       DATABASE_URL: postgresql://memorybridge:memorybridge@localhost:5432/memorybridge
       ENCRYPTION_KEY: eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHg=
+      SERVICE_API_KEYS: mbs_ci_service_key_abcdefghijklmnopqrstuv
+      ADMIN_API_KEY: mba_ci_admin_key_abcdefghijklmnopqrstuvwxyz0123
+      TOKEN_HASH_PEPPER: cGVwcGVyLXBlcHBlci1wZXBwZXItcGVwcGVyIQ==
+      RATE_LIMIT_REQUESTS: "1000"
+      RATE_LIMIT_WINDOW_SECONDS: "60"
 
     steps:
       - name: Checkout
