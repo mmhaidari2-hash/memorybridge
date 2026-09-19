@@ -156,6 +156,17 @@ mb.delete(user_token, session_token)
 
 Treat service, admin, user, and session credentials as secrets. Losing a session token means the current secure API cannot recover that token from the database because only its hash is stored. `memory/list` therefore returns metadata IDs, not recoverable session tokens.
 
+## Run on your laptop (free)
+
+See **`LOCAL.md`** — one command:
+
+```bash
+chmod +x scripts/dev_up.sh
+./scripts/dev_up.sh
+```
+
+Open http://localhost:8000
+
 ## Marketing website
 
 The sales site lives in `web/` (Vite + React).
@@ -171,7 +182,8 @@ After `npm run build`, running the API also serves the landing page at `/`.
 Public self-serve signup: `POST /v1/billing/signup` (also used by the website modal).
 API identity remains at `/api`, `/health`, `/ready`, and `/v1/*`.
 
-See `GO_LIVE.md` for the human-only launch checklist (Stripe account, domain, server, bank).
+See `GO_LIVE.md` for the paid launch checklist (Stripe, domain, server).
+See `ZERO_COST.md` for the no-monthly-cost path (laptop + offline payment + admin plan assign).
 
 ## How you make money
 
