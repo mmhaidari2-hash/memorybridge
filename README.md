@@ -156,6 +156,17 @@ mb.delete(user_token, session_token)
 
 Treat service, admin, user, and session credentials as secrets. Losing a session token means the current secure API cannot recover that token from the database because only its hash is stored. `memory/list` therefore returns metadata IDs, not recoverable session tokens.
 
+## Run on your laptop (free)
+
+See **`LOCAL.md`** — one command:
+
+```bash
+chmod +x scripts/dev_up.sh
+./scripts/dev_up.sh
+```
+
+Open http://localhost:8000
+
 ## Marketing website
 
 The sales site lives in `web/` (Vite + React).
