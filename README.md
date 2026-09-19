@@ -171,7 +171,8 @@ After `npm run build`, running the API also serves the landing page at `/`.
 Public self-serve signup: `POST /v1/billing/signup` (also used by the website modal).
 API identity remains at `/api`, `/health`, `/ready`, and `/v1/*`.
 
-See `GO_LIVE.md` for the human-only launch checklist (Stripe account, domain, server, bank).
+See `GO_LIVE.md` for the paid launch checklist (Stripe, domain, server).
+See `ZERO_COST.md` for the no-monthly-cost path (laptop + offline payment + admin plan assign).
 
 ## How you make money
 
