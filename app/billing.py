@@ -56,7 +56,7 @@ def period_bounds(period_key: str) -> Tuple[datetime, datetime]:
     return start, end
 
 
-def ensure_plans(db: Session) -> None:
+def ensure_plans(db: Session, *, commit: bool = True) -> None:
     settings = get_settings()
     for spec in DEFAULT_PLANS:
         existing = db.query(Plan).filter(Plan.code == spec["code"]).first()
@@ -83,7 +83,10 @@ def ensure_plans(db: Session) -> None:
                 is_public=spec["is_public"],
             )
         )
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
 
 
 def get_plan_by_code(db: Session, code: str) -> Plan:
@@ -94,8 +97,14 @@ def get_plan_by_code(db: Session, code: str) -> Plan:
     return plan
 
 
-def ensure_subscription(db: Session, tenant_id: str, plan_code: str = "free") -> TenantSubscription:
-    ensure_plans(db)
+def ensure_subscription(
+    db: Session,
+    tenant_id: str,
+    plan_code: str = "free",
+    *,
+    commit: bool = True,
+) -> TenantSubscription:
+    ensure_plans(db, commit=commit)
     sub = (
         db.query(TenantSubscription)
         .filter(TenantSubscription.tenant_id == tenant_id)
@@ -104,7 +113,10 @@ def ensure_subscription(db: Session, tenant_id: str, plan_code: str = "free") ->
     if sub:
         return sub
 
-    plan = get_plan_by_code(db, plan_code)
+    plan = db.query(Plan).filter(Plan.code == plan_code).first()
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"Unknown plan: {plan_code}")
+
     period_key = current_period_key()
     start, end = period_bounds(period_key)
     sub = TenantSubscription(
@@ -115,8 +127,11 @@ def ensure_subscription(db: Session, tenant_id: str, plan_code: str = "free") ->
         current_period_end=end,
     )
     db.add(sub)
-    db.commit()
-    db.refresh(sub)
+    if commit:
+        db.commit()
+        db.refresh(sub)
+    else:
+        db.flush()
     return sub
 
 
@@ -235,11 +250,13 @@ def get_billing_snapshot(db: Session, tenant_id: str) -> dict:
 
 
 def enforce_and_meter(db: Session, tenant_id: str, *, creating_memory: bool = False) -> None:
-    """Hard-stop billable API calls when the tenant exceeds plan quotas.
+    """Reserve one billable op inside the caller's open transaction.
 
+    Does NOT commit. Callers must commit after the business write succeeds so a
+    failed insert/update cannot burn quota (atomic metering + data mutation).
     Raises HTTP 402 so clients know this is a payment/plan problem, not auth.
     """
-    sub = ensure_subscription(db, tenant_id)
+    sub = ensure_subscription(db, tenant_id, commit=False)
     if sub.status not in {"active", "trialing"}:
         raise HTTPException(
             status_code=402,
@@ -289,4 +306,4 @@ def enforce_and_meter(db: Session, tenant_id: str, *, creating_memory: bool = Fa
     usage.ops_count += 1
     usage.updated_at = utc_now()
     db.add(usage)
-    db.commit()
+    db.flush()

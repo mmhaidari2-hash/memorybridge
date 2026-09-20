@@ -72,6 +72,7 @@ class TenantResponse(BaseModel):
     name: str
     slug: str
     status: str
+    deleted_at: Optional[str] = None
 
 
 class ApiKeyCreate(BaseModel):

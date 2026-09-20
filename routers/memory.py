@@ -143,9 +143,11 @@ def recall_memory(
             key_version=record.key_version,
         )
     except Exception:
+        db.rollback()
         _audit(db, auth, request, action="memory.recall", outcome="decrypt_error", resource_id=record.id)
         raise HTTPException(status_code=500, detail="Unable to decrypt memory") from None
 
+    db.commit()
     _audit(db, auth, request, action="memory.recall", outcome="success", resource_id=record.id)
 
     return MemoryResponse(

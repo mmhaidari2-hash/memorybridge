@@ -49,6 +49,7 @@ class Settings:
     public_base_url: str
     billing_success_url: str | None
     billing_cancel_url: str | None
+    redis_url: str | None
 
 
 def _require(name: str) -> str:
@@ -211,6 +212,7 @@ def get_settings() -> Settings:
         ),
         billing_success_url=os.getenv("BILLING_SUCCESS_URL", "").strip() or None,
         billing_cancel_url=os.getenv("BILLING_CANCEL_URL", "").strip() or None,
+        redis_url=os.getenv("REDIS_URL", "").strip() or None,
     )
 
 

@@ -28,6 +28,8 @@ class Tenant(Base):
     slug = Column(String(100), unique=True, nullable=False, index=True)
     status = Column(String(32), nullable=False, default="active")
     created_at = Column(DateTime, default=utc_now, nullable=False)
+    # Soft-delete timestamp. Physical DELETE is forbidden while audit rows exist.
+    deleted_at = Column(DateTime, nullable=True)
 
     users = relationship("User", back_populates="tenant", cascade="all, delete-orphan")
     api_keys = relationship("ServiceApiKey", back_populates="tenant", cascade="all, delete-orphan")

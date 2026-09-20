@@ -55,6 +55,7 @@ def create_tenant(
         name=tenant.name,
         slug=tenant.slug,
         status=tenant.status,
+        deleted_at=None,
     )
 
 
@@ -156,6 +157,8 @@ def suspend_tenant(
     tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
+    if tenant.status == "deleted":
+        raise HTTPException(status_code=409, detail="Tenant is already deleted")
 
     tenant.status = "suspended"
     db.commit()
@@ -177,6 +180,60 @@ def suspend_tenant(
         name=tenant.name,
         slug=tenant.slug,
         status=tenant.status,
+        deleted_at=tenant.deleted_at.isoformat() + "Z" if tenant.deleted_at else None,
+    )
+
+
+@router.post("/tenants/{tenant_id}/delete", response_model=TenantResponse)
+def soft_delete_tenant(
+    tenant_id: str,
+    db: Session = Depends(get_db),
+    _admin: str = Depends(verify_admin_api_key),
+):
+    """Soft-delete a tenant. Rows stay so immutable audit FKs remain valid.
+
+    Physical DELETE is intentionally unsupported while audit_events reference
+    the tenant (RESTRICT / no CASCADE).
+    """
+    tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    if tenant.status == "deleted":
+        return TenantResponse(
+            id=tenant.id,
+            name=tenant.name,
+            slug=tenant.slug,
+            status=tenant.status,
+            deleted_at=tenant.deleted_at.isoformat() + "Z" if tenant.deleted_at else None,
+        )
+
+    tenant.status = "deleted"
+    tenant.deleted_at = utc_now()
+    # Revoke all active keys so soft-deleted tenants cannot authenticate.
+    for key in tenant.api_keys:
+        if key.status == "active":
+            key.status = "revoked"
+            key.revoked_at = utc_now()
+    db.commit()
+    db.refresh(tenant)
+
+    record_audit(
+        db,
+        tenant_id=tenant.id,
+        actor_type="admin",
+        actor_id="admin",
+        action="admin.tenant_soft_delete",
+        outcome="success",
+        resource_type="tenant",
+        resource_id=tenant.id,
+    )
+
+    return TenantResponse(
+        id=tenant.id,
+        name=tenant.name,
+        slug=tenant.slug,
+        status=tenant.status,
+        deleted_at=tenant.deleted_at.isoformat() + "Z" if tenant.deleted_at else None,
     )
 
 
@@ -191,6 +248,8 @@ def assign_tenant_plan(
     tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
+    if tenant.status == "deleted":
+        raise HTTPException(status_code=403, detail="Tenant is deleted")
 
     assign_plan(db, tenant_id, payload.plan_code, status="active")
     record_audit(
