@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models import MemoryRecord, Plan, TenantSubscription, UsageCounter, utc_now
+from app.models import MemoryRecord, Plan, Tenant, TenantSubscription, UsageCounter, utc_now
 
 # Default catalog — seeded on first use. Prices are USD monthly.
 DEFAULT_PLANS = (
@@ -256,6 +256,17 @@ def enforce_and_meter(db: Session, tenant_id: str, *, creating_memory: bool = Fa
     failed insert/update cannot burn quota (atomic metering + data mutation).
     Raises HTTP 402 so clients know this is a payment/plan problem, not auth.
     """
+    tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+    if tenant is None or tenant.status != "active":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "tenant_not_active",
+                "message": "Tenant is not active.",
+                "status": None if tenant is None else tenant.status,
+            },
+        )
+
     sub = ensure_subscription(db, tenant_id, commit=False)
     if sub.status not in {"active", "trialing"}:
         raise HTTPException(

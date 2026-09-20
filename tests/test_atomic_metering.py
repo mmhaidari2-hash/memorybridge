@@ -13,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.billing import ensure_plans
 from app.config import clear_settings_cache
-from app.database import Base, get_db
+from app.database import Base, get_db, set_session_factory
 from app.rate_limit import rate_limiter
 from main import app
 
@@ -27,6 +27,8 @@ engine = create_engine(
 )
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base.metadata.create_all(bind=engine)
+
+set_session_factory(TestingSessionLocal)
 
 
 def override_get_db():
@@ -42,6 +44,7 @@ client = TestClient(app)
 
 
 def reset_database():
+    set_session_factory(TestingSessionLocal)
     app.dependency_overrides[get_db] = override_get_db
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)

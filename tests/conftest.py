@@ -23,7 +23,7 @@ os.environ["RATE_LIMIT_REQUESTS"] = "1000"
 os.environ["RATE_LIMIT_WINDOW_SECONDS"] = "60"
 
 from app.config import clear_settings_cache
-from app.database import Base, get_db
+from app.database import Base, get_db, set_session_factory
 from app.rate_limit import rate_limiter
 from main import app
 
@@ -36,6 +36,8 @@ engine = create_engine(
 )
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base.metadata.create_all(bind=engine)
+
+set_session_factory(TestingSessionLocal)
 
 
 def override_get_db():

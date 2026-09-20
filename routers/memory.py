@@ -66,6 +66,8 @@ def _audit(
     outcome: str,
     resource_id: Optional[str] = None,
 ) -> None:
+    # Autonomous: record_audit opens its own session/commit so this survives
+    # any subsequent (or prior) rollback of the request's business transaction.
     record_audit(
         db,
         tenant_id=auth.tenant_id,

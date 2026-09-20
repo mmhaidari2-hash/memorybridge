@@ -1,7 +1,8 @@
 import os
+from typing import Callable, Optional
 
 from sqlalchemy import create_engine
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 
 def get_database_url() -> str:
@@ -25,9 +26,22 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+# Tests rebind this so autonomous audit writes hit the same in-memory DB.
+_session_factory: Optional[Callable[[], Session]] = None
+
+
+def set_session_factory(factory: Optional[Callable[[], Session]]) -> None:
+    global _session_factory
+    _session_factory = factory
+
+
+def create_session() -> Session:
+    factory = _session_factory or SessionLocal
+    return factory()
+
 
 def get_db():
-    db = SessionLocal()
+    db = create_session()
     try:
         yield db
     finally:

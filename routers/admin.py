@@ -161,6 +161,11 @@ def suspend_tenant(
         raise HTTPException(status_code=409, detail="Tenant is already deleted")
 
     tenant.status = "suspended"
+    # Invalidate active API keys so suspended tenants cannot keep calling.
+    for key in tenant.api_keys:
+        if key.status == "active":
+            key.status = "suspended"
+            key.revoked_at = utc_now()
     db.commit()
     db.refresh(tenant)
 
@@ -193,7 +198,8 @@ def soft_delete_tenant(
     """Soft-delete a tenant. Rows stay so immutable audit FKs remain valid.
 
     Physical DELETE is intentionally unsupported while audit_events reference
-    the tenant (RESTRICT / no CASCADE).
+    the tenant (RESTRICT / no CASCADE). The slug is rewritten so a future
+    company can re-register the original brand slug.
     """
     tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
     if not tenant:
@@ -207,11 +213,18 @@ def soft_delete_tenant(
             deleted_at=tenant.deleted_at.isoformat() + "Z" if tenant.deleted_at else None,
         )
 
+    stamp = int(utc_now().timestamp())
+    suffix = f"-deleted-{stamp}-{secrets.token_hex(4)}"
+    base = tenant.slug
+    max_base = max(1, 100 - len(suffix))
+    if len(base) > max_base:
+        base = base[:max_base]
+    tenant.slug = f"{base}{suffix}"
     tenant.status = "deleted"
     tenant.deleted_at = utc_now()
-    # Revoke all active keys so soft-deleted tenants cannot authenticate.
+    # Revoke all active/suspended keys so soft-deleted tenants cannot authenticate.
     for key in tenant.api_keys:
-        if key.status == "active":
+        if key.status in {"active", "suspended"}:
             key.status = "revoked"
             key.revoked_at = utc_now()
     db.commit()

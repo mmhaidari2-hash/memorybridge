@@ -20,7 +20,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.config import clear_settings_cache
-from app.database import Base, get_db
+from app.database import Base, get_db, set_session_factory
 from app.models import AuditEvent, MemoryRecord, User
 from app.rate_limit import rate_limiter
 from app.security import hash_token
@@ -38,6 +38,8 @@ engine = create_engine(
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base.metadata.create_all(bind=engine)
 
+set_session_factory(TestingSessionLocal)
+
 
 def override_get_db():
     db = TestingSessionLocal()
@@ -52,6 +54,7 @@ client = TestClient(app)
 
 
 def reset_database():
+    set_session_factory(TestingSessionLocal)
     app.dependency_overrides[get_db] = override_get_db
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
@@ -318,7 +321,7 @@ def test_suspended_tenant_cannot_authenticate():
         json={},
         headers={"X-MemoryBridge-Key": key["api_key"]},
     )
-    assert blocked.status_code == 403
+    assert blocked.status_code == 401
 
 
 def test_admin_routes_require_admin_key():
