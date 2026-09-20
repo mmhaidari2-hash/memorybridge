@@ -2,6 +2,7 @@ import secrets
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.audit import record_audit
@@ -91,19 +92,6 @@ def store_memory(
     session_token = payload.session_token or f"sess_{secrets.token_urlsafe(24)}"
     session_hash = hash_token(session_token)
 
-    existing = (
-        db.query(MemoryRecord)
-        .filter(
-            MemoryRecord.tenant_id == auth.tenant_id,
-            MemoryRecord.user_id == user.id,
-            MemoryRecord.session_token_hash == session_hash,
-        )
-        .first()
-    )
-    if existing:
-        _audit(db, auth, request, action="memory.store", outcome="conflict", resource_id=existing.id)
-        raise HTTPException(status_code=409, detail="Memory session already exists")
-
     encrypted, key_version = encrypt_text(
         payload.summary,
         tenant_id=auth.tenant_id,
@@ -118,7 +106,13 @@ def store_memory(
         key_version=key_version,
     )
     db.add(record)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # Concurrent inserts racing on uq_memory_tenant_user_session.
+        db.rollback()
+        _audit(db, auth, request, action="memory.store", outcome="conflict")
+        raise HTTPException(status_code=409, detail="Memory session already exists") from None
     db.refresh(record)
 
     _audit(db, auth, request, action="memory.store", outcome="success", resource_id=record.id)

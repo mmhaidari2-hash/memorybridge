@@ -32,7 +32,8 @@ class Tenant(Base):
     users = relationship("User", back_populates="tenant", cascade="all, delete-orphan")
     api_keys = relationship("ServiceApiKey", back_populates="tenant", cascade="all, delete-orphan")
     memories = relationship("MemoryRecord", back_populates="tenant", cascade="all, delete-orphan")
-    audit_events = relationship("AuditEvent", back_populates="tenant", cascade="all, delete-orphan")
+    # No cascade: audit rows must survive tenant deletion (immutable compliance trail).
+    audit_events = relationship("AuditEvent", back_populates="tenant")
     subscription = relationship(
         "TenantSubscription",
         back_populates="tenant",
@@ -126,9 +127,10 @@ class AuditEvent(Base):
     )
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    # RESTRICT (default): tenant delete must not wipe the audit trail.
     tenant_id = Column(
         String,
-        ForeignKey("tenants.id", ondelete="CASCADE"),
+        ForeignKey("tenants.id"),
         nullable=False,
         index=True,
     )

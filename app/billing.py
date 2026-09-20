@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Optional, Tuple
 
 from fastapi import HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -165,6 +166,44 @@ def _get_usage(db: Session, tenant_id: str, period_key: str) -> UsageCounter:
     return row
 
 
+def _get_usage_for_update(db: Session, tenant_id: str, period_key: str) -> UsageCounter:
+    """Load the monthly usage row under a row-level lock.
+
+    Concurrent callers serialize on the same (tenant_id, period_key) row so
+    ops_count increments cannot race past the plan quota.
+    """
+
+    def _locked() -> UsageCounter | None:
+        return (
+            db.query(UsageCounter)
+            .filter(
+                UsageCounter.tenant_id == tenant_id,
+                UsageCounter.period_key == period_key,
+            )
+            .with_for_update()
+            .first()
+        )
+
+    row = _locked()
+    if row:
+        return row
+
+    candidate = UsageCounter(tenant_id=tenant_id, period_key=period_key, ops_count=0)
+    try:
+        with db.begin_nested():
+            db.add(candidate)
+            db.flush()
+    except IntegrityError:
+        # Another worker inserted the same period bucket first — lock that row.
+        row = _locked()
+        if row is None:
+            raise
+        return row
+
+    locked = _locked()
+    return locked if locked is not None else candidate
+
+
 def get_billing_snapshot(db: Session, tenant_id: str) -> dict:
     sub = ensure_subscription(db, tenant_id)
     plan = db.query(Plan).filter(Plan.id == sub.plan_id).one()
@@ -213,7 +252,7 @@ def enforce_and_meter(db: Session, tenant_id: str, *, creating_memory: bool = Fa
 
     plan = db.query(Plan).filter(Plan.id == sub.plan_id).one()
     period_key = current_period_key()
-    usage = _get_usage(db, tenant_id, period_key)
+    usage = _get_usage_for_update(db, tenant_id, period_key)
 
     if usage.ops_count >= plan.monthly_ops_limit:
         raise HTTPException(

@@ -1,4 +1,3 @@
-import os
 import threading
 import time
 from collections import defaultdict, deque
@@ -37,6 +36,11 @@ class InMemoryRateLimiter:
             while bucket and bucket[0] <= cutoff:
                 bucket.popleft()
 
+            # Drop empty buckets so abandoned identities cannot grow memory forever.
+            if not bucket:
+                self._events.pop(identity, None)
+                bucket = self._events[identity]
+
             if len(bucket) >= self.config.requests:
                 retry_after = max(1, int(self.config.window_seconds - (now - bucket[0])))
                 raise HTTPException(
@@ -46,6 +50,18 @@ class InMemoryRateLimiter:
                 )
 
             bucket.append(now)
+            self._gc_expired_buckets(cutoff)
+
+    def _gc_expired_buckets(self, cutoff: float) -> None:
+        """Opportunistic sweep: remove identities whose entire window has elapsed."""
+        stale: list[str] = []
+        for key, dq in self._events.items():
+            while dq and dq[0] <= cutoff:
+                dq.popleft()
+            if not dq:
+                stale.append(key)
+        for key in stale:
+            self._events.pop(key, None)
 
     def reset(self) -> None:
         with self._lock:
