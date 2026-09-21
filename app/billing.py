@@ -269,6 +269,22 @@ def get_billing_snapshot(db: Session, tenant_id: str) -> dict:
 
 
 def enforce_and_meter(db: Session, tenant_id: str, *, creating_memory: bool = False) -> None:
+    try:
+        _enforce_and_meter_body(db, tenant_id, creating_memory=creating_memory)
+    except Exception as exc:
+        msg = str(exc).lower()
+        name = type(exc).__name__.lower()
+        if "undefined" not in name and "does not exist" not in msg and "no such table" not in msg:
+            raise
+        db.rollback()
+        logger.warning("enforce_and_meter_schema_drift_triggering_repair err=%s", exc)
+        from scripts.ensure_schema import repair
+
+        repair()
+        _enforce_and_meter_body(db, tenant_id, creating_memory=creating_memory)
+
+
+def _enforce_and_meter_body(db: Session, tenant_id: str, *, creating_memory: bool = False) -> None:
     """Reserve one billable op inside the caller's open transaction.
 
     Does NOT commit. Callers must commit after the business write succeeds so a
