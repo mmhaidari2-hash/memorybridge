@@ -184,6 +184,8 @@ class TenantSubscription(Base):
     stripe_subscription_id = Column(String(120), nullable=True, index=True)
     current_period_start = Column(DateTime, nullable=False, default=utc_now)
     current_period_end = Column(DateTime, nullable=True)
+    # Monotonic Stripe event.created watermark — drops out-of-order / stale webhooks.
+    last_stripe_event_ts = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=utc_now, nullable=False)
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 

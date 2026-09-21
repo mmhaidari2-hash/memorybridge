@@ -1,7 +1,7 @@
 import re
 import secrets
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -231,28 +231,24 @@ def create_checkout(
 
 
 @router.post("/billing/webhook")
-async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
-    """Stripe webhook ingress.
+async def stripe_webhook(request: Request, background_tasks: BackgroundTasks):
+    """Stripe webhook ingress — accept fast, process asynchronously.
 
-    Signature failures return 400. Verified events are processed idempotently;
-    unexpected processing errors are logged and return 500 so Stripe can retry
-    without leaving an unhandled exception path.
+    Signature is verified synchronously (400 on failure). Verified events are
+    queued onto BackgroundTasks and HTTP 200 is returned immediately so Stripe
+    does not hit synchronous DB/timeouts. Processing opens its own DB session.
     """
     body, signature = await stripe_billing.read_webhook_payload(request)
     event = stripe_billing.construct_webhook_event(body, signature)
 
-    try:
-        result = stripe_billing.process_stripe_event(db, event)
-    except Exception:
-        db.rollback()
-        # Controlled failure — Stripe will retry; avoid unhandled 500 stack traces.
-        import logging
+    # Materialize a plain dict so the background task does not retain Stripe
+    # SDK objects tied to the request lifecycle.
+    if hasattr(event, "to_dict"):
+        event_payload = event.to_dict()
+    elif isinstance(event, dict):
+        event_payload = event
+    else:
+        event_payload = dict(event)
 
-        logging.getLogger("memorybridge.stripe").exception(
-            "stripe_webhook_processing_failed event_id=%s type=%s",
-            event.get("id"),
-            event.get("type"),
-        )
-        raise HTTPException(status_code=500, detail="Webhook processing failed") from None
-
-    return result
+    background_tasks.add_task(stripe_billing.process_stripe_event, event_payload)
+    return {"status": "received"}

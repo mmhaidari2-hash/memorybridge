@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.audit import record_audit
 from app.billing import ensure_plans, ensure_subscription, get_plan_by_code
 from app.config import get_settings
+from app.database import create_session
 from app.models import Plan, StripeWebhookEvent, TenantSubscription, utc_now
 
 logger = logging.getLogger("memorybridge.stripe")
@@ -186,8 +187,13 @@ def apply_subscription_snapshot(
     status: str,
     period_start: Optional[datetime] = None,
     period_end: Optional[datetime] = None,
+    event_created: Optional[int] = None,
 ) -> Optional[TenantSubscription]:
-    """Idempotently sync TenantSubscription under a row-level lock."""
+    """Idempotently sync TenantSubscription under a row-level lock.
+
+    ``event_created`` is Stripe's ``event.created`` unix timestamp. Events at or
+    before ``sub.last_stripe_event_ts`` are discarded (out-of-order / stale).
+    """
     if not tenant_id and not stripe_subscription_id and not stripe_customer_id:
         return None
 
@@ -210,6 +216,17 @@ def apply_subscription_snapshot(
         )
         return None
 
+    if event_created is not None:
+        created_ts = int(event_created)
+        if created_ts <= int(sub.last_stripe_event_ts or 0):
+            logger.info(
+                "stale event discarded tenant_id=%s event_created=%s last_stripe_event_ts=%s",
+                sub.tenant_id,
+                created_ts,
+                sub.last_stripe_event_ts,
+            )
+            return None
+
     if plan_code:
         plan = get_plan_by_code(db, plan_code)
         sub.plan_id = plan.id
@@ -225,6 +242,8 @@ def apply_subscription_snapshot(
         sub.current_period_start = period_start
     if period_end is not None:
         sub.current_period_end = period_end
+    if event_created is not None:
+        sub.last_stripe_event_ts = int(event_created)
     sub.updated_at = utc_now()
     db.add(sub)
     db.flush()
@@ -253,19 +272,25 @@ def _claim_event(db: Session, event_id: str, event_type: str) -> bool:
     return True
 
 
-def handle_checkout_session_completed(db: Session, session: Dict[str, Any]) -> None:
+def handle_checkout_session_completed(
+    db: Session,
+    session: Dict[str, Any],
+    *,
+    event_created: Optional[int] = None,
+) -> None:
     metadata = session.get("metadata") or {}
     tenant_id = metadata.get("tenant_id") or session.get("client_reference_id")
     plan_code = metadata.get("plan_code") or "starter"
-    apply_subscription_snapshot(
+    applied = apply_subscription_snapshot(
         db,
         tenant_id=tenant_id,
         stripe_customer_id=session.get("customer"),
         stripe_subscription_id=session.get("subscription"),
         plan_code=plan_code,
         status="active",
+        event_created=event_created,
     )
-    if tenant_id:
+    if tenant_id and applied is not None:
         record_audit(
             db,
             tenant_id=tenant_id,
@@ -278,14 +303,19 @@ def handle_checkout_session_completed(db: Session, session: Dict[str, Any]) -> N
         )
 
 
-def handle_subscription_updated(db: Session, subscription: Dict[str, Any]) -> None:
+def handle_subscription_updated(
+    db: Session,
+    subscription: Dict[str, Any],
+    *,
+    event_created: Optional[int] = None,
+) -> None:
     metadata = subscription.get("metadata") or {}
     tenant_id = metadata.get("tenant_id")
     plan_code = metadata.get("plan_code") or _plan_code_from_price_id(
         db, _price_id_from_subscription(subscription)
     )
     status = _map_stripe_subscription_status(subscription.get("status"))
-    apply_subscription_snapshot(
+    applied = apply_subscription_snapshot(
         db,
         tenant_id=tenant_id,
         stripe_customer_id=subscription.get("customer"),
@@ -294,8 +324,9 @@ def handle_subscription_updated(db: Session, subscription: Dict[str, Any]) -> No
         status=status,
         period_start=_ts_to_dt(subscription.get("current_period_start")),
         period_end=_ts_to_dt(subscription.get("current_period_end")),
+        event_created=event_created,
     )
-    if tenant_id:
+    if tenant_id and applied is not None:
         record_audit(
             db,
             tenant_id=tenant_id,
@@ -308,10 +339,15 @@ def handle_subscription_updated(db: Session, subscription: Dict[str, Any]) -> No
         )
 
 
-def handle_subscription_deleted(db: Session, subscription: Dict[str, Any]) -> None:
+def handle_subscription_deleted(
+    db: Session,
+    subscription: Dict[str, Any],
+    *,
+    event_created: Optional[int] = None,
+) -> None:
     metadata = subscription.get("metadata") or {}
     tenant_id = metadata.get("tenant_id")
-    apply_subscription_snapshot(
+    applied = apply_subscription_snapshot(
         db,
         tenant_id=tenant_id,
         stripe_customer_id=subscription.get("customer"),
@@ -319,8 +355,9 @@ def handle_subscription_deleted(db: Session, subscription: Dict[str, Any]) -> No
         plan_code="free",
         status="canceled",
         period_end=_ts_to_dt(subscription.get("current_period_end")) or utc_now(),
+        event_created=event_created,
     )
-    if tenant_id:
+    if tenant_id and applied is not None:
         record_audit(
             db,
             tenant_id=tenant_id,
@@ -333,12 +370,17 @@ def handle_subscription_deleted(db: Session, subscription: Dict[str, Any]) -> No
         )
 
 
-def handle_invoice_payment_succeeded(db: Session, invoice: Dict[str, Any]) -> None:
+def handle_invoice_payment_succeeded(
+    db: Session,
+    invoice: Dict[str, Any],
+    *,
+    event_created: Optional[int] = None,
+) -> None:
     sub_id = invoice.get("subscription")
     customer_id = invoice.get("customer")
     metadata = invoice.get("subscription_details", {}).get("metadata") or invoice.get("metadata") or {}
     tenant_id = metadata.get("tenant_id")
-    apply_subscription_snapshot(
+    applied = apply_subscription_snapshot(
         db,
         tenant_id=tenant_id,
         stripe_customer_id=customer_id,
@@ -346,8 +388,9 @@ def handle_invoice_payment_succeeded(db: Session, invoice: Dict[str, Any]) -> No
         plan_code=metadata.get("plan_code"),
         status="active",
         period_end=_ts_to_dt(invoice.get("period_end") or invoice.get("lines", {}).get("data", [{}])[0].get("period", {}).get("end")),
+        event_created=event_created,
     )
-    if tenant_id:
+    if tenant_id and applied is not None:
         record_audit(
             db,
             tenant_id=tenant_id,
@@ -360,20 +403,26 @@ def handle_invoice_payment_succeeded(db: Session, invoice: Dict[str, Any]) -> No
         )
 
 
-def handle_invoice_payment_failed(db: Session, invoice: Dict[str, Any]) -> None:
+def handle_invoice_payment_failed(
+    db: Session,
+    invoice: Dict[str, Any],
+    *,
+    event_created: Optional[int] = None,
+) -> None:
     sub_id = invoice.get("subscription")
     customer_id = invoice.get("customer")
     metadata = invoice.get("subscription_details", {}).get("metadata") or invoice.get("metadata") or {}
     tenant_id = metadata.get("tenant_id")
-    apply_subscription_snapshot(
+    applied = apply_subscription_snapshot(
         db,
         tenant_id=tenant_id,
         stripe_customer_id=customer_id,
         stripe_subscription_id=sub_id if isinstance(sub_id, str) else None,
         plan_code=metadata.get("plan_code"),
         status="past_due",
+        event_created=event_created,
     )
-    if tenant_id:
+    if tenant_id and applied is not None:
         record_audit(
             db,
             tenant_id=tenant_id,
@@ -386,27 +435,70 @@ def handle_invoice_payment_failed(db: Session, invoice: Dict[str, Any]) -> None:
         )
 
 
-def process_stripe_event(db: Session, event: Dict[str, Any]) -> Dict[str, Any]:
-    """Apply a verified Stripe event idempotently. Never raises for business skips."""
-    event_id = event.get("id") or ""
-    event_type = event.get("type") or ""
+def process_stripe_event(event: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply a verified Stripe event idempotently in an independent DB session.
+
+    Must open its own session: FastAPI closes the request-scoped session before
+    BackgroundTasks run. Never raises for business skips (duplicates / stale).
+    """
+    db = create_session()
+    try:
+        return _process_stripe_event(db, event)
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "stripe_webhook_processing_failed event_id=%s type=%s",
+            event.get("id") if isinstance(event, dict) else getattr(event, "id", None),
+            event.get("type") if isinstance(event, dict) else getattr(event, "type", None),
+        )
+        raise
+    finally:
+        db.close()
+
+
+def _event_get(event: Any, key: str, default: Any = None) -> Any:
+    if isinstance(event, dict):
+        return event.get(key, default)
+    return getattr(event, key, default) if hasattr(event, key) else (
+        event.get(key, default) if hasattr(event, "get") else default
+    )
+
+
+def _process_stripe_event(db: Session, event: Any) -> Dict[str, Any]:
+    event_id = _event_get(event, "id") or ""
+    event_type = _event_get(event, "type") or ""
+    event_created = _event_get(event, "created")
+    if event_created is not None:
+        try:
+            event_created = int(event_created)
+        except (TypeError, ValueError):
+            event_created = None
 
     if not _claim_event(db, event_id, event_type):
         logger.info("stripe_webhook_duplicate event_id=%s type=%s", event_id, event_type)
+        db.commit()
         return {"received": True, "duplicate": True}
 
-    payload = (event.get("data") or {}).get("object") or {}
+    data = _event_get(event, "data") or {}
+    if hasattr(data, "get"):
+        payload = data.get("object") or {}
+    else:
+        payload = getattr(data, "object", None) or {}
+    if hasattr(payload, "to_dict"):
+        payload = payload.to_dict()
+    elif not isinstance(payload, dict) and hasattr(payload, "keys"):
+        payload = dict(payload)
 
     if event_type == "checkout.session.completed":
-        handle_checkout_session_completed(db, payload)
+        handle_checkout_session_completed(db, payload, event_created=event_created)
     elif event_type == "customer.subscription.updated":
-        handle_subscription_updated(db, payload)
+        handle_subscription_updated(db, payload, event_created=event_created)
     elif event_type == "customer.subscription.deleted":
-        handle_subscription_deleted(db, payload)
+        handle_subscription_deleted(db, payload, event_created=event_created)
     elif event_type == "invoice.payment_succeeded":
-        handle_invoice_payment_succeeded(db, payload)
+        handle_invoice_payment_succeeded(db, payload, event_created=event_created)
     elif event_type == "invoice.payment_failed":
-        handle_invoice_payment_failed(db, payload)
+        handle_invoice_payment_failed(db, payload, event_created=event_created)
     else:
         logger.info("stripe_webhook_ignored type=%s event_id=%s", event_type, event_id)
 

@@ -1,6 +1,7 @@
-"""Stripe webhook idempotency and subscription state locking."""
+"""Stripe webhook async acceptance, idempotency, and out-of-order protection."""
 
 import os
+from unittest.mock import patch
 
 SERVICE_API_KEY = "mbs_test_service_key_abcdefghijklmnopqrstuvwxyz"
 ADMIN_API_KEY = "mba_test_admin_key_abcdefghijklmnopqrstuvwxyz012345"
@@ -15,10 +16,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.billing import ensure_plans, ensure_subscription
+from app.billing import ensure_plans
 from app.config import clear_settings_cache
 from app.database import Base, get_db, set_session_factory
-from app.models import Plan, StripeWebhookEvent, Tenant, TenantSubscription
+from app.models import Plan, StripeWebhookEvent, TenantSubscription
 from app.rate_limit import rate_limiter
 from app import stripe_billing
 from main import app
@@ -75,6 +76,7 @@ def test_checkout_completed_activates_plan_idempotently():
     event = {
         "id": "evt_test_checkout_1",
         "type": "checkout.session.completed",
+        "created": 1_700_000_100,
         "data": {
             "object": {
                 "id": "cs_test_1",
@@ -86,18 +88,19 @@ def test_checkout_completed_activates_plan_idempotently():
         },
     }
 
+    first = stripe_billing.process_stripe_event(event)
+    assert first["duplicate"] is False
     with TestingSessionLocal() as db:
-        first = stripe_billing.process_stripe_event(db, event)
-        assert first["duplicate"] is False
         sub = db.query(TenantSubscription).filter(TenantSubscription.tenant_id == tenant_id).one()
         plan = db.query(Plan).filter(Plan.id == sub.plan_id).one()
         assert plan.code == "starter"
         assert sub.status == "active"
         assert sub.stripe_subscription_id == "sub_test_1"
+        assert sub.last_stripe_event_ts == 1_700_000_100
 
+    second = stripe_billing.process_stripe_event(event)
+    assert second["duplicate"] is True
     with TestingSessionLocal() as db:
-        second = stripe_billing.process_stripe_event(db, event)
-        assert second["duplicate"] is True
         assert db.query(StripeWebhookEvent).filter(StripeWebhookEvent.id == "evt_test_checkout_1").count() == 1
 
 
@@ -105,64 +108,150 @@ def test_subscription_deleted_and_payment_failed_states():
     reset_database()
     tenant_id = _seed_tenant()
 
-    with TestingSessionLocal() as db:
-        stripe_billing.process_stripe_event(
-            db,
-            {
-                "id": "evt_activate",
-                "type": "checkout.session.completed",
-                "data": {
-                    "object": {
-                        "id": "cs_2",
-                        "customer": "cus_2",
-                        "subscription": "sub_2",
-                        "metadata": {"tenant_id": tenant_id, "plan_code": "growth"},
-                    }
-                },
+    stripe_billing.process_stripe_event(
+        {
+            "id": "evt_activate",
+            "type": "checkout.session.completed",
+            "created": 1_700_000_200,
+            "data": {
+                "object": {
+                    "id": "cs_2",
+                    "customer": "cus_2",
+                    "subscription": "sub_2",
+                    "metadata": {"tenant_id": tenant_id, "plan_code": "growth"},
+                }
             },
-        )
+        },
+    )
 
-    with TestingSessionLocal() as db:
-        stripe_billing.process_stripe_event(
-            db,
-            {
-                "id": "evt_fail",
-                "type": "invoice.payment_failed",
-                "data": {
-                    "object": {
-                        "id": "in_fail",
-                        "customer": "cus_2",
-                        "subscription": "sub_2",
-                        "metadata": {"tenant_id": tenant_id},
-                    }
-                },
+    stripe_billing.process_stripe_event(
+        {
+            "id": "evt_fail",
+            "type": "invoice.payment_failed",
+            "created": 1_700_000_300,
+            "data": {
+                "object": {
+                    "id": "in_fail",
+                    "customer": "cus_2",
+                    "subscription": "sub_2",
+                    "metadata": {"tenant_id": tenant_id},
+                }
             },
-        )
+        },
+    )
+    with TestingSessionLocal() as db:
         sub = db.query(TenantSubscription).filter(TenantSubscription.tenant_id == tenant_id).one()
         assert sub.status == "past_due"
+        assert sub.last_stripe_event_ts == 1_700_000_300
 
-    with TestingSessionLocal() as db:
-        stripe_billing.process_stripe_event(
-            db,
-            {
-                "id": "evt_del",
-                "type": "customer.subscription.deleted",
-                "data": {
-                    "object": {
-                        "id": "sub_2",
-                        "customer": "cus_2",
-                        "metadata": {"tenant_id": tenant_id},
-                    }
-                },
+    stripe_billing.process_stripe_event(
+        {
+            "id": "evt_del",
+            "type": "customer.subscription.deleted",
+            "created": 1_700_000_400,
+            "data": {
+                "object": {
+                    "id": "sub_2",
+                    "customer": "cus_2",
+                    "metadata": {"tenant_id": tenant_id},
+                }
             },
-        )
+        },
+    )
+    with TestingSessionLocal() as db:
         sub = db.query(TenantSubscription).filter(TenantSubscription.tenant_id == tenant_id).one()
         plan = db.query(Plan).filter(Plan.id == sub.plan_id).one()
         assert plan.code == "free"
         assert sub.status == "canceled"
+        assert sub.last_stripe_event_ts == 1_700_000_400
+
+
+def test_stale_out_of_order_event_discarded():
+    reset_database()
+    tenant_id = _seed_tenant()
+
+    stripe_billing.process_stripe_event(
+        {
+            "id": "evt_newer",
+            "type": "customer.subscription.updated",
+            "created": 1_700_000_500,
+            "data": {
+                "object": {
+                    "id": "sub_oo",
+                    "customer": "cus_oo",
+                    "status": "active",
+                    "metadata": {"tenant_id": tenant_id, "plan_code": "starter"},
+                }
+            },
+        },
+    )
+    with TestingSessionLocal() as db:
+        sub = db.query(TenantSubscription).filter(TenantSubscription.tenant_id == tenant_id).one()
+        plan = db.query(Plan).filter(Plan.id == sub.plan_id).one()
+        assert plan.code == "starter"
+        assert sub.status == "active"
+        assert sub.last_stripe_event_ts == 1_700_000_500
+
+    # Older event arrives late — must not clobber newer state.
+    stripe_billing.process_stripe_event(
+        {
+            "id": "evt_stale",
+            "type": "invoice.payment_failed",
+            "created": 1_700_000_100,
+            "data": {
+                "object": {
+                    "id": "in_stale",
+                    "customer": "cus_oo",
+                    "subscription": "sub_oo",
+                    "metadata": {"tenant_id": tenant_id},
+                }
+            },
+        },
+    )
+    with TestingSessionLocal() as db:
+        sub = db.query(TenantSubscription).filter(TenantSubscription.tenant_id == tenant_id).one()
+        plan = db.query(Plan).filter(Plan.id == sub.plan_id).one()
+        assert plan.code == "starter"
+        assert sub.status == "active"
+        assert sub.last_stripe_event_ts == 1_700_000_500
 
 
 def test_webhook_rejects_missing_signature():
     reset_database()
     response = client.post("/v1/billing/webhook", content=b"{}")
     assert response.status_code == 400
+
+
+def test_webhook_accepts_async_and_returns_received():
+    reset_database()
+    tenant_id = _seed_tenant()
+    event = {
+        "id": "evt_async_1",
+        "type": "checkout.session.completed",
+        "created": 1_700_000_600,
+        "data": {
+            "object": {
+                "id": "cs_async",
+                "customer": "cus_async",
+                "subscription": "sub_async",
+                "metadata": {"tenant_id": tenant_id, "plan_code": "starter"},
+            }
+        },
+    }
+
+    with patch.object(stripe_billing, "read_webhook_payload", return_value=(b"{}", "sig")):
+        with patch.object(stripe_billing, "construct_webhook_event", return_value=event):
+            response = client.post(
+                "/v1/billing/webhook",
+                content=b"{}",
+                headers={"Stripe-Signature": "sig"},
+            )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "received"}
+    # TestClient drains BackgroundTasks before returning.
+    with TestingSessionLocal() as db:
+        sub = db.query(TenantSubscription).filter(TenantSubscription.tenant_id == tenant_id).one()
+        plan = db.query(Plan).filter(Plan.id == sub.plan_id).one()
+        assert plan.code == "starter"
+        assert sub.last_stripe_event_ts == 1_700_000_600
