@@ -21,7 +21,10 @@ USER memorybridge
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=5 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=5 \
   CMD python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/health' % os.environ.get('PORT','8000'), timeout=3)" || exit 1
 
-CMD ["sh", "-c", "exec /app/scripts/docker-entrypoint.sh"]
+# Serve immediately. Schema repair must be run as a one-off Railway command
+# (or with RAILWAY_TOKEN) because in-process migrate currently blocks boot on
+# this drifted database.
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
