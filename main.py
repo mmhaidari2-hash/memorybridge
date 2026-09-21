@@ -1,4 +1,7 @@
 from pathlib import Path
+from contextlib import asynccontextmanager
+import logging
+import threading
 
 from fastapi import Depends, FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,15 +18,36 @@ from app.observability import RequestLoggingMiddleware
 from app.request_limits import RequestSizeLimitMiddleware
 from routers import admin, auth, billing, memory
 
+logger = logging.getLogger("memorybridge.boot")
+
 # Fail closed on boot if required security configuration is missing.
 get_settings()
 
 WEB_DIST = Path(__file__).resolve().parent / "web" / "dist"
 
+
+def _background_schema_repair() -> None:
+    try:
+        from scripts.ensure_schema import repair
+
+        repair()
+        logger.info("background_schema_repair_ok")
+    except Exception:
+        logger.exception("background_schema_repair_failed")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Heal drifted DBs after the server is already accepting /health.
+    threading.Thread(target=_background_schema_repair, name="schema-repair", daemon=True).start()
+    yield
+
+
 app = FastAPI(
     title="MemoryBridge API",
     version="0.4.0-dev",
     description="Multi-tenant secure memory persistence layer for AI applications.",
+    lifespan=lifespan,
 )
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestLoggingMiddleware)

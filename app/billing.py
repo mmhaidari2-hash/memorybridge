@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from calendar import monthrange
 from datetime import datetime
 from typing import Optional, Tuple
@@ -12,6 +13,8 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.models import MemoryRecord, Plan, Tenant, TenantSubscription, UsageCounter, utc_now
+
+logger = logging.getLogger("memorybridge.billing")
 
 # Default catalog — seeded on first use. Prices are USD monthly.
 DEFAULT_PLANS = (
@@ -58,6 +61,22 @@ def period_bounds(period_key: str) -> Tuple[datetime, datetime]:
 
 def ensure_plans(db: Session, *, commit: bool = True) -> None:
     settings = get_settings()
+    try:
+        _ensure_plans_body(db, settings=settings, commit=commit)
+    except Exception as exc:
+        # Drifted prod DBs may be missing the plans table entirely.
+        msg = str(exc).lower()
+        if "plans" not in msg and "undefinedtable" not in type(exc).__name__.lower():
+            raise
+        db.rollback()
+        logger.warning("ensure_plans_missing_schema_triggering_repair err=%s", exc)
+        from scripts.ensure_schema import repair
+
+        repair()
+        _ensure_plans_body(db, settings=settings, commit=commit)
+
+
+def _ensure_plans_body(db: Session, *, settings, commit: bool) -> None:
     for spec in DEFAULT_PLANS:
         existing = db.query(Plan).filter(Plan.code == spec["code"]).first()
         stripe_price = None
