@@ -1,5 +1,6 @@
 import re
 import secrets
+import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy.exc import IntegrityError
@@ -86,7 +87,8 @@ def list_public_plans(db: Session = Depends(get_db)):
 def signup(payload: SignupRequest, request: Request, db: Session = Depends(get_db)):
     """Public self-serve signup: create tenant + API key, optionally start Stripe Checkout.
 
-    Tenant, subscription, and API key are written in a single atomic transaction.
+    Stripe is called *before* any DB writes so a slow payment-gateway round-trip
+    never holds a pooled connection. Tenant/subscription/API key commit atomically.
     """
     client_host = request.client.host if request.client else "unknown"
     rate_limiter.check(f"signup:{client_host}")
@@ -97,28 +99,54 @@ def signup(payload: SignupRequest, request: Request, db: Session = Depends(get_d
         raise HTTPException(status_code=400, detail="Invalid email")
 
     wants_paid = payload.plan_code in {"starter", "growth"}
+    # Pre-generate so Stripe metadata can reference the tenant before DB insert.
+    tenant_id = str(uuid.uuid4())
     plaintext_key = f"mbs_{secrets.token_urlsafe(32)}"
     checkout_url = None
     session_id = None
     message = "Tenant created on Free plan. Store your API key now — it will not be shown again."
 
+    # External network I/O first — no open DB transaction / flush yet.
+    if wants_paid:
+        settings = get_settings()
+        price_id = (
+            settings.stripe_price_starter
+            if payload.plan_code == "starter"
+            else settings.stripe_price_growth
+        )
+        if not stripe_billing.stripe_enabled() or not price_id:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "card_payments_not_configured",
+                    "message": "Card checkout is not configured yet. Choose Free, or ask an admin to assign a paid plan offline.",
+                },
+            )
+        session = stripe_billing.create_checkout_session(
+            tenant_id=tenant_id,
+            tenant_slug=payload.slug,
+            plan_code=payload.plan_code,
+            stripe_price_id=price_id,
+            customer_email=payload.email,
+        )
+        checkout_url = session["checkout_url"]
+        session_id = session["session_id"]
+        message = (
+            "Tenant created. Complete card checkout to activate the paid plan. "
+            "Your API key works now on Free limits until payment succeeds."
+        )
+
     try:
         ensure_plans(db, commit=False)
 
-        if wants_paid:
-            plan = db.query(Plan).filter(Plan.code == payload.plan_code).first()
-            if plan is None or not stripe_billing.stripe_enabled() or not plan.stripe_price_id:
-                raise HTTPException(
-                    status_code=503,
-                    detail={
-                        "error": "card_payments_not_configured",
-                        "message": "Card checkout is not configured yet. Choose Free, or ask an admin to assign a paid plan offline.",
-                    },
-                )
-
-        tenant = Tenant(name=payload.company_name, slug=payload.slug, status="active")
+        tenant = Tenant(
+            id=tenant_id,
+            name=payload.company_name,
+            slug=payload.slug,
+            status="active",
+        )
         db.add(tenant)
-        db.flush()  # allocate tenant.id; surface slug uniqueness before key insert
+        db.flush()  # surface slug uniqueness before related inserts
 
         # Always start on Free until Stripe confirms payment (or stay Free).
         ensure_subscription(db, tenant.id, plan_code="free", commit=False)
@@ -131,23 +159,6 @@ def signup(payload: SignupRequest, request: Request, db: Session = Depends(get_d
             status="active",
         )
         db.add(key)
-        db.flush()
-
-        if wants_paid:
-            plan = db.query(Plan).filter(Plan.code == payload.plan_code).one()
-            session = stripe_billing.create_checkout_session(
-                tenant_id=tenant.id,
-                tenant_slug=tenant.slug,
-                plan_code=plan.code,
-                stripe_price_id=plan.stripe_price_id,
-                customer_email=payload.email,
-            )
-            checkout_url = session["checkout_url"]
-            session_id = session["session_id"]
-            message = (
-                "Tenant created. Complete card checkout to activate the paid plan. "
-                "Your API key works now on Free limits until payment succeeds."
-            )
 
         db.commit()
     except HTTPException:
