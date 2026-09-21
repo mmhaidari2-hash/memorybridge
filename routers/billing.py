@@ -90,58 +90,58 @@ def signup(payload: SignupRequest, request: Request, db: Session = Depends(get_d
     Stripe is called *before* any DB writes so a slow payment-gateway round-trip
     never holds a pooled connection. Tenant/subscription/API key commit atomically.
     """
-    client_host = request.client.host if request.client else "unknown"
-    rate_limiter.check(f"signup:{client_host}")
-
-    if payload.slug in RESERVED_SLUGS:
-        raise HTTPException(status_code=400, detail="Slug is reserved")
-    if not EMAIL_RE.match(payload.email):
-        raise HTTPException(status_code=400, detail="Invalid email")
-
-    wants_paid = payload.plan_code in {"starter", "growth"}
-    # Fast read-only check to prevent Stripe API abuse for duplicate slugs
-    if db.query(Tenant.id).filter(Tenant.slug == payload.slug).first():
-        raise HTTPException(status_code=409, detail="Company slug already exists")
-
-    # Pre-generate so Stripe metadata can reference the tenant before DB insert.
-    tenant_id = str(uuid.uuid4())
-    plaintext_key = f"mbs_{secrets.token_urlsafe(32)}"
-    checkout_url = None
-    session_id = None
-    message = "Tenant created on Free plan. Store your API key now — it will not be shown again."
-
-    # External network I/O first — no open DB transaction / flush yet.
-    if wants_paid:
-        settings = get_settings()
-        price_id = (
-            settings.stripe_price_starter
-            if payload.plan_code == "starter"
-            else settings.stripe_price_growth
-        )
-        if not stripe_billing.stripe_enabled() or not price_id:
-            raise HTTPException(
-                status_code=503,
-                detail={
-                    "error": "card_payments_not_configured",
-                    "message": "Card checkout is not configured yet. Choose Free, or ask an admin to assign a paid plan offline.",
-                },
-            )
-        session = stripe_billing.create_checkout_session(
-            tenant_id=tenant_id,
-            tenant_slug=payload.slug,
-            plan_code=payload.plan_code,
-            stripe_price_id=price_id,
-            customer_email=payload.email,
-            idempotency_key=f"signup_slug_{payload.slug}",
-        )
-        checkout_url = session["checkout_url"]
-        session_id = session["session_id"]
-        message = (
-            "Tenant created. Complete card checkout to activate the paid plan. "
-            "Your API key works now on Free limits until payment succeeds."
-        )
-
     try:
+        client_host = request.client.host if request.client else "unknown"
+        rate_limiter.check(f"signup:{client_host}")
+
+        if payload.slug in RESERVED_SLUGS:
+            raise HTTPException(status_code=400, detail="Slug is reserved")
+        if not EMAIL_RE.match(payload.email):
+            raise HTTPException(status_code=400, detail="Invalid email")
+
+        wants_paid = payload.plan_code in {"starter", "growth"}
+        # Fast read-only check to prevent Stripe API abuse for duplicate slugs
+        if db.query(Tenant.id).filter(Tenant.slug == payload.slug).first():
+            raise HTTPException(status_code=409, detail="Company slug already exists")
+
+        # Pre-generate so Stripe metadata can reference the tenant before DB insert.
+        tenant_id = str(uuid.uuid4())
+        plaintext_key = f"mbs_{secrets.token_urlsafe(32)}"
+        checkout_url = None
+        session_id = None
+        message = "Tenant created on Free plan. Store your API key now — it will not be shown again."
+
+        # External network I/O first — no open DB transaction / flush yet.
+        if wants_paid:
+            settings = get_settings()
+            price_id = (
+                settings.stripe_price_starter
+                if payload.plan_code == "starter"
+                else settings.stripe_price_growth
+            )
+            if not stripe_billing.stripe_enabled() or not price_id:
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "error": "card_payments_not_configured",
+                        "message": "Card checkout is not configured yet. Choose Free, or ask an admin to assign a paid plan offline.",
+                    },
+                )
+            session = stripe_billing.create_checkout_session(
+                tenant_id=tenant_id,
+                tenant_slug=payload.slug,
+                plan_code=payload.plan_code,
+                stripe_price_id=price_id,
+                customer_email=payload.email,
+                idempotency_key=f"signup_slug_{payload.slug}",
+            )
+            checkout_url = session["checkout_url"]
+            session_id = session["session_id"]
+            message = (
+                "Tenant created. Complete card checkout to activate the paid plan. "
+                "Your API key works now on Free limits until payment succeeds."
+            )
+
         ensure_plans(db, commit=False)
 
         tenant = Tenant(
@@ -174,7 +174,6 @@ def signup(payload: SignupRequest, request: Request, db: Session = Depends(get_d
         raise HTTPException(status_code=409, detail="Company slug already exists") from None
     except Exception as exc:
         db.rollback()
-        # Temporary production signal for deploy diagnosis; keep message short.
         raise HTTPException(
             status_code=500,
             detail={"error": "signup_failed", "message": f"{type(exc).__name__}: {exc}"},
