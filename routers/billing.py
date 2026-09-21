@@ -172,12 +172,9 @@ def signup(payload: SignupRequest, request: Request, db: Session = Depends(get_d
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=409, detail="Company slug already exists") from None
-    except Exception as exc:
+    except Exception:
         db.rollback()
-        raise HTTPException(
-            status_code=500,
-            detail={"error": "signup_failed", "message": f"{type(exc).__name__}: {exc}"},
-        ) from exc
+        raise
 
     record_audit(
         db,
