@@ -211,3 +211,13 @@ class UsageCounter(Base):
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
     tenant = relationship("Tenant", back_populates="usage_counters")
+
+
+class StripeWebhookEvent(Base):
+    """Processed Stripe event IDs for idempotent webhook handling."""
+
+    __tablename__ = "stripe_webhook_events"
+
+    id = Column(String, primary_key=True)  # Stripe evt_...
+    event_type = Column(String(64), nullable=False, index=True)
+    created_at = Column(DateTime, default=utc_now, nullable=False)

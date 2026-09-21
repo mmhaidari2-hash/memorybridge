@@ -8,7 +8,6 @@ from sqlalchemy.orm import Session
 from app.audit import record_audit
 from app.auth_context import AuthContext
 from app.billing import (
-    assign_plan,
     ensure_plans,
     ensure_subscription,
     get_billing_snapshot,
@@ -233,48 +232,27 @@ def create_checkout(
 
 @router.post("/billing/webhook")
 async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
+    """Stripe webhook ingress.
+
+    Signature failures return 400. Verified events are processed idempotently;
+    unexpected processing errors are logged and return 500 so Stripe can retry
+    without leaving an unhandled exception path.
+    """
     body, signature = await stripe_billing.read_webhook_payload(request)
     event = stripe_billing.construct_webhook_event(body, signature)
 
-    if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
-        metadata = session.get("metadata") or {}
-        tenant_id = metadata.get("tenant_id") or session.get("client_reference_id")
-        plan_code = metadata.get("plan_code")
-        if tenant_id and plan_code:
-            assign_plan(
-                db,
-                tenant_id,
-                plan_code,
-                stripe_customer_id=session.get("customer"),
-                stripe_subscription_id=session.get("subscription"),
-                status="active",
-            )
-            record_audit(
-                db,
-                tenant_id=tenant_id,
-                actor_type="stripe",
-                actor_id=session.get("id"),
-                action="billing.checkout_completed",
-                outcome="success",
-                resource_type="plan",
-                resource_id=plan_code,
-            )
+    try:
+        result = stripe_billing.process_stripe_event(db, event)
+    except Exception:
+        db.rollback()
+        # Controlled failure — Stripe will retry; avoid unhandled 500 stack traces.
+        import logging
 
-    elif event["type"] == "customer.subscription.deleted":
-        subscription = event["data"]["object"]
-        tenant_id = (subscription.get("metadata") or {}).get("tenant_id")
-        if tenant_id:
-            assign_plan(db, tenant_id, "free", status="active")
-            record_audit(
-                db,
-                tenant_id=tenant_id,
-                actor_type="stripe",
-                actor_id=subscription.get("id"),
-                action="billing.subscription_canceled",
-                outcome="success",
-                resource_type="plan",
-                resource_id="free",
-            )
+        logging.getLogger("memorybridge.stripe").exception(
+            "stripe_webhook_processing_failed event_id=%s type=%s",
+            event.get("id"),
+            event.get("type"),
+        )
+        raise HTTPException(status_code=500, detail="Webhook processing failed") from None
 
-    return {"received": True}
+    return result
