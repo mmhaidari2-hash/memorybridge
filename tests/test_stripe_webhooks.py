@@ -1,4 +1,4 @@
-"""Stripe webhook async acceptance, idempotency, and out-of-order protection."""
+"""Stripe webhook durable inbox, idempotency, and out-of-order protection."""
 
 import os
 from unittest.mock import patch
@@ -11,6 +11,7 @@ ADMIN_HEADERS = {"X-MemoryBridge-Admin-Key": ADMIN_API_KEY}
 os.environ.setdefault("SERVICE_API_KEYS", SERVICE_API_KEY)
 os.environ.setdefault("ADMIN_API_KEY", ADMIN_API_KEY)
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -19,7 +20,7 @@ from sqlalchemy.pool import StaticPool
 from app.billing import ensure_plans
 from app.config import clear_settings_cache
 from app.database import Base, get_db, set_session_factory
-from app.models import Plan, StripeWebhookEvent, TenantSubscription
+from app.models import Plan, StripeWebhookEvent, StripeWebhookInbox, Tenant, TenantSubscription, ServiceApiKey
 from app.rate_limit import rate_limiter
 from app import stripe_billing
 from main import app
@@ -192,7 +193,6 @@ def test_stale_out_of_order_event_discarded():
         assert sub.status == "active"
         assert sub.last_stripe_event_ts == 1_700_000_500
 
-    # Older event arrives late — must not clobber newer state.
     stripe_billing.process_stripe_event(
         {
             "id": "evt_stale",
@@ -222,7 +222,7 @@ def test_webhook_rejects_missing_signature():
     assert response.status_code == 400
 
 
-def test_webhook_accepts_async_and_returns_received():
+def test_webhook_persists_inbox_then_processes():
     reset_database()
     tenant_id = _seed_tenant()
     event = {
@@ -249,9 +249,83 @@ def test_webhook_accepts_async_and_returns_received():
 
     assert response.status_code == 200
     assert response.json() == {"status": "received"}
-    # TestClient drains BackgroundTasks before returning.
     with TestingSessionLocal() as db:
+        inbox = db.query(StripeWebhookInbox).filter(StripeWebhookInbox.id == "evt_async_1").one()
+        assert inbox.status == "processed"
+        assert inbox.event_type == "checkout.session.completed"
         sub = db.query(TenantSubscription).filter(TenantSubscription.tenant_id == tenant_id).one()
         plan = db.query(Plan).filter(Plan.id == sub.plan_id).one()
         assert plan.code == "starter"
         assert sub.last_stripe_event_ts == 1_700_000_600
+
+
+def test_webhook_duplicate_delivery_still_returns_200():
+    reset_database()
+    tenant_id = _seed_tenant()
+    event = {
+        "id": "evt_dup_inbox",
+        "type": "checkout.session.completed",
+        "created": 1_700_000_700,
+        "data": {
+            "object": {
+                "id": "cs_dup",
+                "customer": "cus_dup",
+                "subscription": "sub_dup",
+                "metadata": {"tenant_id": tenant_id, "plan_code": "starter"},
+            }
+        },
+    }
+
+    with patch.object(stripe_billing, "read_webhook_payload", return_value=(b"{}", "sig")):
+        with patch.object(stripe_billing, "construct_webhook_event", return_value=event):
+            first = client.post("/v1/billing/webhook", content=b"{}", headers={"Stripe-Signature": "sig"})
+            second = client.post("/v1/billing/webhook", content=b"{}", headers={"Stripe-Signature": "sig"})
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    with TestingSessionLocal() as db:
+        assert db.query(StripeWebhookInbox).filter(StripeWebhookInbox.id == "evt_dup_inbox").count() == 1
+
+
+def test_create_checkout_session_maps_stripe_error_to_502():
+    reset_database()
+    with patch.object(stripe_billing, "_configure"):
+        with patch("stripe.checkout.Session.create", side_effect=stripe_billing.stripe.error.StripeError("down")):
+            try:
+                stripe_billing.create_checkout_session(
+                    tenant_id="t1",
+                    tenant_slug="t1",
+                    plan_code="starter",
+                    stripe_price_id="price_x",
+                    customer_email="a@b.com",
+                )
+                assert False, "expected HTTPException"
+            except HTTPException as exc:
+                assert exc.status_code == 502
+                assert "Payment gateway temporarily unavailable" in exc.detail
+
+
+def test_signup_is_atomic_on_key_failure():
+    reset_database()
+    with patch(
+        "routers.billing.hash_service_api_key",
+        side_effect=RuntimeError("key hash blew up"),
+    ):
+        try:
+            client.post(
+                "/v1/billing/signup",
+                json={
+                    "company_name": "Boom Co",
+                    "slug": "boom-co",
+                    "email": "a@boom.co",
+                    "plan_code": "free",
+                },
+            )
+            assert False, "expected RuntimeError to propagate in TestClient"
+        except RuntimeError as exc:
+            assert "key hash blew up" in str(exc)
+
+    with TestingSessionLocal() as db:
+        assert db.query(Tenant).filter(Tenant.slug == "boom-co").count() == 0
+        assert db.query(ServiceApiKey).count() == 0
+        assert db.query(TenantSubscription).count() == 0

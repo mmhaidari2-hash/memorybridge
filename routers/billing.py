@@ -84,7 +84,10 @@ def list_public_plans(db: Session = Depends(get_db)):
 
 @router.post("/billing/signup", response_model=SignupResponse, status_code=201)
 def signup(payload: SignupRequest, request: Request, db: Session = Depends(get_db)):
-    """Public self-serve signup: create tenant + API key, optionally start Stripe Checkout."""
+    """Public self-serve signup: create tenant + API key, optionally start Stripe Checkout.
+
+    Tenant, subscription, and API key are written in a single atomic transaction.
+    """
     client_host = request.client.host if request.client else "unknown"
     rate_limiter.check(f"signup:{client_host}")
 
@@ -93,63 +96,69 @@ def signup(payload: SignupRequest, request: Request, db: Session = Depends(get_d
     if not EMAIL_RE.match(payload.email):
         raise HTTPException(status_code=400, detail="Invalid email")
 
-    ensure_plans(db)
-
     wants_paid = payload.plan_code in {"starter", "growth"}
-    if wants_paid:
-        plan = get_plan_by_code(db, payload.plan_code)
-        if not stripe_billing.stripe_enabled() or not plan.stripe_price_id:
-            raise HTTPException(
-                status_code=503,
-                detail={
-                    "error": "card_payments_not_configured",
-                    "message": "Card checkout is not configured yet. Choose Free, or ask an admin to assign a paid plan offline.",
-                },
-            )
-
-    tenant = Tenant(name=payload.company_name, slug=payload.slug, status="active")
-    db.add(tenant)
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(status_code=409, detail="Company slug already exists") from None
-    db.refresh(tenant)
-
-    # Always start on Free until Stripe confirms payment (or stay Free).
-    ensure_subscription(db, tenant.id, plan_code="free")
-
     plaintext_key = f"mbs_{secrets.token_urlsafe(32)}"
-    key = ServiceApiKey(
-        tenant_id=tenant.id,
-        name="default",
-        key_prefix=api_key_prefix(plaintext_key),
-        key_hash=hash_service_api_key(plaintext_key),
-        status="active",
-    )
-    db.add(key)
-    db.commit()
-    db.refresh(key)
-
     checkout_url = None
     session_id = None
     message = "Tenant created on Free plan. Store your API key now — it will not be shown again."
 
-    if wants_paid:
-        plan = get_plan_by_code(db, payload.plan_code)
-        session = stripe_billing.create_checkout_session(
+    try:
+        ensure_plans(db, commit=False)
+
+        if wants_paid:
+            plan = db.query(Plan).filter(Plan.code == payload.plan_code).first()
+            if plan is None or not stripe_billing.stripe_enabled() or not plan.stripe_price_id:
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "error": "card_payments_not_configured",
+                        "message": "Card checkout is not configured yet. Choose Free, or ask an admin to assign a paid plan offline.",
+                    },
+                )
+
+        tenant = Tenant(name=payload.company_name, slug=payload.slug, status="active")
+        db.add(tenant)
+        db.flush()  # allocate tenant.id; surface slug uniqueness before key insert
+
+        # Always start on Free until Stripe confirms payment (or stay Free).
+        ensure_subscription(db, tenant.id, plan_code="free", commit=False)
+
+        key = ServiceApiKey(
             tenant_id=tenant.id,
-            tenant_slug=tenant.slug,
-            plan_code=plan.code,
-            stripe_price_id=plan.stripe_price_id,
-            customer_email=payload.email,
+            name="default",
+            key_prefix=api_key_prefix(plaintext_key),
+            key_hash=hash_service_api_key(plaintext_key),
+            status="active",
         )
-        checkout_url = session["checkout_url"]
-        session_id = session["session_id"]
-        message = (
-            "Tenant created. Complete card checkout to activate the paid plan. "
-            "Your API key works now on Free limits until payment succeeds."
-        )
+        db.add(key)
+        db.flush()
+
+        if wants_paid:
+            plan = db.query(Plan).filter(Plan.code == payload.plan_code).one()
+            session = stripe_billing.create_checkout_session(
+                tenant_id=tenant.id,
+                tenant_slug=tenant.slug,
+                plan_code=plan.code,
+                stripe_price_id=plan.stripe_price_id,
+                customer_email=payload.email,
+            )
+            checkout_url = session["checkout_url"]
+            session_id = session["session_id"]
+            message = (
+                "Tenant created. Complete card checkout to activate the paid plan. "
+                "Your API key works now on Free limits until payment succeeds."
+            )
+
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Company slug already exists") from None
+    except Exception:
+        db.rollback()
+        raise
 
     record_audit(
         db,
@@ -231,24 +240,22 @@ def create_checkout(
 
 
 @router.post("/billing/webhook")
-async def stripe_webhook(request: Request, background_tasks: BackgroundTasks):
-    """Stripe webhook ingress — accept fast, process asynchronously.
+async def stripe_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """Stripe webhook ingress — durable inbox, then async process.
 
-    Signature is verified synchronously (400 on failure). Verified events are
-    queued onto BackgroundTasks and HTTP 200 is returned immediately so Stripe
-    does not hit synchronous DB/timeouts. Processing opens its own DB session.
+    Signature is verified synchronously (400 on failure). The verified event is
+    committed to ``stripe_webhook_inbox`` before HTTP 200 so a process restart
+    cannot lose the payload. BackgroundTasks then drains the inbox row.
     """
     body, signature = await stripe_billing.read_webhook_payload(request)
     event = stripe_billing.construct_webhook_event(body, signature)
 
-    # Materialize a plain dict so the background task does not retain Stripe
-    # SDK objects tied to the request lifecycle.
-    if hasattr(event, "to_dict"):
-        event_payload = event.to_dict()
-    elif isinstance(event, dict):
-        event_payload = event
-    else:
-        event_payload = dict(event)
+    event_id, _created = stripe_billing.persist_webhook_inbox(db, event)
+    db.commit()  # durable accept — only then acknowledge Stripe
 
-    background_tasks.add_task(stripe_billing.process_stripe_event, event_payload)
+    background_tasks.add_task(stripe_billing.process_inbox_event, event_id)
     return {"status": "received"}

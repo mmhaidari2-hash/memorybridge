@@ -223,3 +223,15 @@ class StripeWebhookEvent(Base):
     id = Column(String, primary_key=True)  # Stripe evt_...
     event_type = Column(String(64), nullable=False, index=True)
     created_at = Column(DateTime, default=utc_now, nullable=False)
+
+
+class StripeWebhookInbox(Base):
+    """Durable webhook inbox — survive process restarts before background work runs."""
+
+    __tablename__ = "stripe_webhook_inbox"
+
+    id = Column(String, primary_key=True)  # Stripe evt_...
+    event_type = Column(String(64), nullable=False, index=True)
+    payload = Column(Text, nullable=False)
+    status = Column(String(32), nullable=False, default="pending", index=True)
+    created_at = Column(DateTime, default=utc_now, nullable=False)

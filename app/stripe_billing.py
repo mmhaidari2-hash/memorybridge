@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -15,7 +16,7 @@ from app.audit import record_audit
 from app.billing import ensure_plans, ensure_subscription, get_plan_by_code
 from app.config import get_settings
 from app.database import create_session
-from app.models import Plan, StripeWebhookEvent, TenantSubscription, utc_now
+from app.models import Plan, StripeWebhookEvent, StripeWebhookInbox, TenantSubscription, utc_now
 
 logger = logging.getLogger("memorybridge.stripe")
 
@@ -74,7 +75,18 @@ def create_checkout_session(
     elif customer_email:
         params["customer_email"] = customer_email
 
-    session = stripe.checkout.Session.create(**params)
+    try:
+        session = stripe.checkout.Session.create(**params)
+    except stripe.error.StripeError:
+        logger.exception(
+            "stripe_checkout_session_failed tenant_id=%s plan_code=%s",
+            tenant_id,
+            plan_code,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="Payment gateway temporarily unavailable. Please try again later.",
+        ) from None
     return {"checkout_url": session.url, "session_id": session.id}
 
 
@@ -438,8 +450,9 @@ def handle_invoice_payment_failed(
 def process_stripe_event(event: Dict[str, Any]) -> Dict[str, Any]:
     """Apply a verified Stripe event idempotently in an independent DB session.
 
-    Must open its own session: FastAPI closes the request-scoped session before
-    BackgroundTasks run. Never raises for business skips (duplicates / stale).
+    Used by unit tests and by the durable inbox worker. Prefer
+    ``process_inbox_event`` for production BackgroundTasks so crashes cannot
+    lose unpersisted payloads.
     """
     db = create_session()
     try:
@@ -452,6 +465,87 @@ def process_stripe_event(event: Dict[str, Any]) -> Dict[str, Any]:
             event.get("type") if isinstance(event, dict) else getattr(event, "type", None),
         )
         raise
+    finally:
+        db.close()
+
+
+def _normalize_event_payload(event: Any) -> Dict[str, Any]:
+    if hasattr(event, "to_dict"):
+        return event.to_dict()
+    if isinstance(event, dict):
+        return event
+    return dict(event)
+
+
+def persist_webhook_inbox(db: Session, event: Any) -> tuple[str, bool]:
+    """Insert a verified Stripe event into the durable inbox.
+
+    Returns ``(event_id, created)``. Duplicate primary keys are treated as
+    already-accepted (idempotent Stripe retries) and return ``created=False``.
+    Caller must ``db.commit()`` after a successful insert (``created=True``).
+    """
+    payload = _normalize_event_payload(event)
+    event_id = str(payload.get("id") or "")
+    event_type = str(payload.get("type") or "")
+    if not event_id:
+        raise HTTPException(status_code=400, detail="Stripe event missing id")
+
+    existing = db.query(StripeWebhookInbox).filter(StripeWebhookInbox.id == event_id).first()
+    if existing:
+        return event_id, False
+
+    try:
+        with db.begin_nested():
+            db.add(
+                StripeWebhookInbox(
+                    id=event_id,
+                    event_type=event_type,
+                    payload=json.dumps(payload),
+                    status="pending",
+                    created_at=utc_now(),
+                )
+            )
+            db.flush()
+    except IntegrityError:
+        return event_id, False
+    return event_id, True
+
+
+def process_inbox_event(event_id: str) -> Dict[str, Any]:
+    """Background worker: load durable inbox row, process, mark processed/failed."""
+    db = create_session()
+    try:
+        inbox = (
+            db.query(StripeWebhookInbox)
+            .filter(StripeWebhookInbox.id == event_id)
+            .with_for_update()
+            .first()
+        )
+        if inbox is None:
+            logger.warning("stripe_inbox_missing event_id=%s", event_id)
+            return {"received": False, "missing": True}
+        if inbox.status == "processed":
+            logger.info("stripe_inbox_already_processed event_id=%s", event_id)
+            return {"received": True, "duplicate": True, "status": "processed"}
+
+        try:
+            event = json.loads(inbox.payload)
+            result = _process_stripe_event(db, event)
+            # Re-load after inner commit so status update is durable.
+            inbox = db.query(StripeWebhookInbox).filter(StripeWebhookInbox.id == event_id).one()
+            inbox.status = "processed"
+            db.add(inbox)
+            db.commit()
+            return result
+        except Exception:
+            db.rollback()
+            logger.exception("stripe_inbox_processing_failed event_id=%s", event_id)
+            failed = db.query(StripeWebhookInbox).filter(StripeWebhookInbox.id == event_id).first()
+            if failed is not None:
+                failed.status = "failed"
+                db.add(failed)
+                db.commit()
+            return {"received": False, "status": "failed", "event_id": event_id}
     finally:
         db.close()
 
