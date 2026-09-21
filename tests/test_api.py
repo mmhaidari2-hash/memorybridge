@@ -167,6 +167,7 @@ def test_create_store_recall_update_delete_flow_and_hashes_credentials():
     )
     assert list_response.status_code == 200
     assert len(list_response.json()["sessions"]) == 1
+    assert list_response.json()["total_count"] == 1
     assert "summary" not in list_response.json()["sessions"][0]
 
     delete_response = client.post(
@@ -203,20 +204,60 @@ def test_duplicate_session_store_is_conflict():
     assert second.status_code == 409
 
 
-def test_invalid_user_token_is_rejected_without_user_enumeration():
+def test_store_auto_registers_unknown_user_token():
     reset_database()
 
     response = client.post(
         "/v1/memory/store",
         json={
-            "user_token": "mb_invalid_token_1234567890",
-            "summary": "should fail",
+            "user_token": "mb_client_provisioned_token_123456",
+            "summary": "auto registered user memory",
         },
         headers=SERVICE_HEADERS,
     )
 
-    assert response.status_code == 401
-    assert response.json()["detail"] == "Invalid credentials"
+    assert response.status_code == 201
+    assert response.json()["summary"] == "auto registered user memory"
+
+    with TestingSessionLocal() as db:
+        assert db.query(User).count() == 1
+
+
+def test_memory_list_pagination_returns_total_count():
+    reset_database()
+    user_token = "mb_pagination_user_token_abcdef"
+    for i in range(3):
+        assert (
+            client.post(
+                "/v1/memory/store",
+                json={
+                    "user_token": user_token,
+                    "session_token": f"sess_pagination_token_{i:02d}_xxxxxx",
+                    "summary": f"memory {i}",
+                },
+                headers=SERVICE_HEADERS,
+            ).status_code
+            == 201
+        )
+
+    page = client.post(
+        "/v1/memory/list",
+        json={"user_token": user_token, "limit": 2, "offset": 0},
+        headers=SERVICE_HEADERS,
+    )
+    assert page.status_code == 200
+    body = page.json()
+    assert body["total_count"] == 3
+    assert len(body["sessions"]) == 2
+
+    page2 = client.post(
+        "/v1/memory/list",
+        json={"user_token": user_token, "limit": 2, "offset": 2},
+        headers=SERVICE_HEADERS,
+    )
+    assert page2.status_code == 200
+    assert page2.json()["total_count"] == 3
+    assert len(page2.json()["sessions"]) == 1
 
 
 def test_cross_user_session_access_is_blocked():
@@ -274,13 +315,14 @@ def test_tenant_isolation_and_key_revocation():
         headers=tenant_headers,
     ).json()["session_token"]
 
-    # Default env key must not see the other tenant's user.
+    # Default env key must not see the other tenant's memory (auto-creates a
+    # distinct user under the default tenant, then misses the session).
     cross = client.post(
         "/v1/memory/recall",
         json={"user_token": user_token, "session_token": session_token},
         headers=SERVICE_HEADERS,
     )
-    assert cross.status_code == 401
+    assert cross.status_code == 404
 
     # Revoke key → subsequent calls fail.
     revoked = client.post(f"/v1/admin/keys/{key_id}/revoke", headers=ADMIN_HEADERS)

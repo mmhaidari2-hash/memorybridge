@@ -29,17 +29,35 @@ router = APIRouter(tags=["Memory"])
 
 
 def get_user(db: Session, tenant_id: str, user_token: str) -> User:
+    """Resolve a tenant user by token hash, auto-creating on first use (upsert)."""
+    token_hash = hash_token(user_token)
     user = (
         db.query(User)
         .filter(
             User.tenant_id == tenant_id,
-            User.user_token_hash == hash_token(user_token),
+            User.user_token_hash == token_hash,
         )
         .first()
     )
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    return user
+    if user:
+        return user
+
+    candidate = User(tenant_id=tenant_id, user_token_hash=token_hash)
+    try:
+        # Savepoint so a concurrent unique race does not roll back metering.
+        with db.begin_nested():
+            db.add(candidate)
+            db.flush()
+        return candidate
+    except IntegrityError:
+        return (
+            db.query(User)
+            .filter(
+                User.tenant_id == tenant_id,
+                User.user_token_hash == token_hash,
+            )
+            .one()
+        )
 
 
 def get_memory(db: Session, tenant_id: str, user: User, session_token: str) -> MemoryRecord:
@@ -228,17 +246,20 @@ def list_memory_sessions(
 ):
     """List session metadata only — never returns decrypted summaries."""
     user = get_user(db, auth.tenant_id, payload.user_token)
+    base_query = db.query(MemoryRecord).filter(
+        MemoryRecord.tenant_id == auth.tenant_id,
+        MemoryRecord.user_id == user.id,
+    )
+    total_count = base_query.count()
     records = (
-        db.query(MemoryRecord)
-        .filter(
-            MemoryRecord.tenant_id == auth.tenant_id,
-            MemoryRecord.user_id == user.id,
-        )
-        .order_by(MemoryRecord.updated_at.desc())
-        .limit(200)
+        base_query.order_by(MemoryRecord.updated_at.desc())
+        .offset(payload.offset)
+        .limit(payload.limit)
         .all()
     )
 
+    # Persist any auto-created user row from get_user upsert.
+    db.commit()
     _audit(db, auth, request, action="memory.list", outcome="success", resource_id=user.id)
 
     return MemoryListResponse(
@@ -250,5 +271,6 @@ def list_memory_sessions(
                 updated_at=record.updated_at.isoformat() + "Z",
             )
             for record in records
-        ]
+        ],
+        total_count=total_count,
     )

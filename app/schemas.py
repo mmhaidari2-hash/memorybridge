@@ -49,6 +49,8 @@ class MemoryDeleteResponse(BaseModel):
 
 class MemoryListRequest(BaseModel):
     user_token: str = Field(min_length=16, max_length=256)
+    limit: int = Field(default=50, ge=1, le=200)
+    offset: int = Field(default=0, ge=0)
 
 
 class MemorySessionMeta(BaseModel):
@@ -60,6 +62,7 @@ class MemorySessionMeta(BaseModel):
 
 class MemoryListResponse(BaseModel):
     sessions: List[MemorySessionMeta]
+    total_count: int
 
 
 class TenantCreate(BaseModel):
