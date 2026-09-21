@@ -1,4 +1,5 @@
 import os
+from unittest.mock import patch
 
 SERVICE_API_KEY = "mbs_test_service_key_abcdefghijklmnopqrstuvwxyz"
 ADMIN_API_KEY = "mba_test_admin_key_abcdefghijklmnopqrstuvwxyz012345"
@@ -184,6 +185,40 @@ def test_paid_signup_without_stripe_is_rejected_clearly():
     )
     assert response.status_code == 503
     assert response.json()["detail"]["error"] == "card_payments_not_configured"
+
+
+def test_signup_rejects_duplicate_slug_before_stripe():
+    reset_database()
+    first = client.post(
+        "/v1/billing/signup",
+        json={
+            "company_name": "Taken Co",
+            "slug": "taken-co",
+            "email": "a@taken.co",
+            "plan_code": "free",
+        },
+    )
+    assert first.status_code == 201
+
+    with patch("routers.billing.stripe_billing.create_checkout_session") as create_checkout:
+        create_checkout.side_effect = AssertionError("Stripe must not be called for duplicate slug")
+        with patch("routers.billing.stripe_billing.stripe_enabled", return_value=True):
+            with patch("routers.billing.get_settings") as settings_mock:
+                settings_mock.return_value.stripe_price_starter = "price_test"
+                settings_mock.return_value.stripe_price_growth = "price_test"
+                second = client.post(
+                    "/v1/billing/signup",
+                    json={
+                        "company_name": "Taken Co 2",
+                        "slug": "taken-co",
+                        "email": "b@taken.co",
+                        "plan_code": "starter",
+                    },
+                )
+
+    assert second.status_code == 409
+    assert second.json()["detail"] == "Company slug already exists"
+    create_checkout.assert_not_called()
 
 
 def test_billing_config_endpoint():

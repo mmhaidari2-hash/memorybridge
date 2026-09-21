@@ -99,6 +99,10 @@ def signup(payload: SignupRequest, request: Request, db: Session = Depends(get_d
         raise HTTPException(status_code=400, detail="Invalid email")
 
     wants_paid = payload.plan_code in {"starter", "growth"}
+    # Fast read-only check to prevent Stripe API abuse for duplicate slugs
+    if db.query(Tenant.id).filter(Tenant.slug == payload.slug).first():
+        raise HTTPException(status_code=409, detail="Company slug already exists")
+
     # Pre-generate so Stripe metadata can reference the tenant before DB insert.
     tenant_id = str(uuid.uuid4())
     plaintext_key = f"mbs_{secrets.token_urlsafe(32)}"
