@@ -25,8 +25,8 @@ RUN apt-get update \
         ca-certificates \
         curl \
     && rm -rf /var/lib/apt/lists/* \
-    && addgroup --system --gid 10001 memorybridge \
-    && adduser --system --uid 10001 --ingroup memorybridge --home /app memorybridge
+    && addgroup --system memorybridge \
+    && adduser --system --ingroup memorybridge memorybridge
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
@@ -40,8 +40,10 @@ USER memorybridge
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
-  CMD python -c "import os,urllib.request; p=os.environ.get('PORT','8000'); urllib.request.urlopen(f'http://127.0.0.1:{p}/health', timeout=3)" || exit 1
+# Allow time for alembic + cold start before health probes.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=5 \
+  CMD python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/health' % os.environ.get('PORT','8000'), timeout=3)" || exit 1
 
-# Migrations then Uvicorn; PORT is injected by Railway (defaults to 8000).
-ENTRYPOINT ["/app/scripts/docker-entrypoint.sh"]
+# Railway injects PORT. Shell form matches prior successful deploys and expands ${PORT}.
+# Entrypoint runs alembic upgrade head, then exec's uvicorn.
+CMD ["sh", "-c", "exec /app/scripts/docker-entrypoint.sh"]

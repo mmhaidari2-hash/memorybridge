@@ -13,3 +13,8 @@ Dockerfile*
 tests
 *.sqlite
 *.db
+exports
+web/node_modules
+web/dist
+*.md
+!README.md
