@@ -221,6 +221,27 @@ def test_signup_rejects_duplicate_slug_before_stripe():
     create_checkout.assert_not_called()
 
 
+def test_paid_signup_passes_slug_idempotency_key():
+    reset_database()
+    fake = {"checkout_url": "https://checkout.stripe.test/cs_x", "session_id": "cs_x"}
+    with patch("routers.billing.stripe_billing.create_checkout_session", return_value=fake) as create_checkout:
+        with patch("routers.billing.stripe_billing.stripe_enabled", return_value=True):
+            with patch("routers.billing.get_settings") as settings_mock:
+                settings_mock.return_value.stripe_price_starter = "price_test"
+                settings_mock.return_value.stripe_price_growth = "price_test"
+                response = client.post(
+                    "/v1/billing/signup",
+                    json={
+                        "company_name": "Idem Co",
+                        "slug": "idem-co",
+                        "email": "a@idem.co",
+                        "plan_code": "starter",
+                    },
+                )
+    assert response.status_code == 201
+    assert create_checkout.call_args.kwargs["idempotency_key"] == "signup_slug_idem-co"
+
+
 def test_billing_config_endpoint():
     reset_database()
     response = client.get("/v1/billing/config")

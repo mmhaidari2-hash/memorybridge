@@ -132,6 +132,7 @@ def signup(payload: SignupRequest, request: Request, db: Session = Depends(get_d
             plan_code=payload.plan_code,
             stripe_price_id=price_id,
             customer_email=payload.email,
+            idempotency_key=f"signup_slug_{payload.slug}",
         )
         checkout_url = session["checkout_url"]
         session_id = session["session_id"]

@@ -250,6 +250,7 @@ def list_memory_sessions(
     auth: AuthContext = Depends(verify_service_api_key),
 ):
     """List session metadata only — never returns decrypted summaries."""
+    rate_limiter.check(f"api:{auth.tenant_id}")
     user = get_user(db, auth.tenant_id, payload.user_token)
     base_query = db.query(MemoryRecord).filter(
         MemoryRecord.tenant_id == auth.tenant_id,

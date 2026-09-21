@@ -46,6 +46,7 @@ def create_checkout_session(
     stripe_price_id: str,
     customer_email: Optional[str] = None,
     existing_customer_id: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     _configure()
     settings = get_settings()
@@ -76,7 +77,10 @@ def create_checkout_session(
         params["customer_email"] = customer_email
 
     try:
-        session = stripe.checkout.Session.create(**params)
+        session = stripe.checkout.Session.create(
+            **params,
+            idempotency_key=idempotency_key,
+        )
     except stripe.error.StripeError:
         logger.exception(
             "stripe_checkout_session_failed tenant_id=%s plan_code=%s",
