@@ -3,7 +3,9 @@ set -eu
 
 echo "memorybridge: starting boot sequence"
 
-# Retry migrations briefly — Postgres may still be accepting connections after deploy.
+echo "memorybridge: running schema repair"
+python -m scripts.ensure_schema || python scripts/ensure_schema.py
+
 i=1
 while [ "$i" -le 10 ]; do
   echo "memorybridge: alembic upgrade head (attempt $i)"
