@@ -1,0 +1,855 @@
+--- app/security.py ---
+"""Cryptographic helpers: versioned AES-256-GCM, peppered token hashing."""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import hmac
+import os
+from typing import Optional, Tuple
+
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+from app.config import get_settings
+
+
+def hash_token(token: str) -> str:
+    if not token:
+        raise ValueError("Token must not be empty")
+    pepper = get_settings().token_hash_pepper
+    return hmac.new(pepper, token.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _aad(tenant_id: str, user_id: str) -> bytes:
+    if not tenant_id or not user_id:
+        raise ValueError("tenant_id and user_id are required for encryption AAD")
+    return f"mb:v1:{tenant_id}:{user_id}".encode("utf-8")
+
+
+def encrypt_text(plain_text: str, *, tenant_id: str, user_id: str) -> Tuple[str, int]:
+    """Encrypt with the active key version. Returns (ciphertext_b64, key_version)."""
+    keyring = get_settings().keyring
+    version = keyring.active_version
+    key = keyring.get(version)
+    aesgcm = AESGCM(key)
+    nonce = os.urandom(12)
+    ciphertext = aesgcm.encrypt(nonce, plain_text.encode("utf-8"), _aad(tenant_id, user_id))
+    packed = base64.b64encode(nonce + ciphertext).decode("ascii")
+    return packed, version
+
+
+def decrypt_text(
+    encrypted_b64: str,
+    *,
+    tenant_id: str,
+    user_id: str,
+    key_version: Optional[int] = None,
+) -> str:
+    keyring = get_settings().keyring
+    version = key_version if key_version is not None else keyring.active_version
+    key = keyring.get(version)
+    aesgcm = AESGCM(key)
+    data = base64.b64decode(encrypted_b64, validate=True)
+
+    if len(data) < 13:
+        raise ValueError("Encrypted payload is invalid")
+
+    nonce = data[:12]
+    ciphertext = data[12:]
+    decrypted = aesgcm.decrypt(nonce, ciphertext, _aad(tenant_id, user_id))
+    return decrypted.decode("utf-8")
+
+--- routers/memory.py ---
+import secrets
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.orm import Session
+
+from app.audit import record_audit
+from app.auth_context import AuthContext
+from app.billing import enforce_and_meter
+from app.database import get_db
+from app.metrics import metrics
+from app.models import MemoryRecord, User
+from app.schemas import (
+    MemoryDelete,
+    MemoryDeleteResponse,
+    MemoryListRequest,
+    MemoryListResponse,
+    MemoryRecall,
+    MemoryResponse,
+    MemorySessionMeta,
+    MemoryStore,
+    MemoryUpdate,
+)
+from app.security import decrypt_text, encrypt_text, hash_token
+from app.service_auth import verify_service_api_key
+
+router = APIRouter(tags=["Memory"])
+
+
+def get_user(db: Session, tenant_id: str, user_token: str) -> User:
+    user = (
+        db.query(User)
+        .filter(
+            User.tenant_id == tenant_id,
+            User.user_token_hash == hash_token(user_token),
+        )
+        .first()
+    )
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    return user
+
+
+def get_memory(db: Session, tenant_id: str, user: User, session_token: str) -> MemoryRecord:
+    record = (
+        db.query(MemoryRecord)
+        .filter(
+            MemoryRecord.tenant_id == tenant_id,
+            MemoryRecord.user_id == user.id,
+            MemoryRecord.session_token_hash == hash_token(session_token),
+        )
+        .first()
+    )
+    if not record:
+        raise HTTPException(status_code=404, detail="Memory session not found")
+    return record
+
+
+def _audit(
+    db: Session,
+    auth: AuthContext,
+    request: Request,
+    *,
+    action: str,
+    outcome: str,
+    resource_id: Optional[str] = None,
+) -> None:
+    record_audit(
+        db,
+        tenant_id=auth.tenant_id,
+        actor_type="service_key",
+        actor_id=auth.key_id or auth.key_prefix,
+        action=action,
+        outcome=outcome,
+        resource_type="memory",
+        resource_id=resource_id,
+        request_id=request.headers.get("X-Request-ID"),
+    )
+    metrics.incr("memorybridge_requests_total", action=action, outcome=outcome)
+
+
+@router.post("/memory/store", response_model=MemoryResponse, status_code=201)
+def store_memory(
+    payload: MemoryStore,
+    request: Request,
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(verify_service_api_key),
+):
+    enforce_and_meter(db, auth.tenant_id, creating_memory=True)
+    user = get_user(db, auth.tenant_id, payload.user_token)
+    session_token = payload.session_token or f"sess_{secrets.token_urlsafe(24)}"
+    session_hash = hash_token(session_token)
+
+    existing = (
+        db.query(MemoryRecord)
+        .filter(
+            MemoryRecord.tenant_id == auth.tenant_id,
+            MemoryRecord.user_id == user.id,
+            MemoryRecord.session_token_hash == session_hash,
+        )
+        .first()
+    )
+    if existing:
+        _audit(db, auth, request, action="memory.store", outcome="conflict", resource_id=existing.id)
+        raise HTTPException(status_code=409, detail="Memory session already exists")
+
+    encrypted, key_version = encrypt_text(
+        payload.summary,
+        tenant_id=auth.tenant_id,
+        user_id=user.id,
+    )
+    record = MemoryRecord(
+        tenant_id=auth.tenant_id,
+        user_id=user.id,
+        session_token_hash=session_hash,
+        stage=payload.stage,
+        encrypted_content=encrypted,
+        key_version=key_version,
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+
+    _audit(db, auth, request, action="memory.store", outcome="success", resource_id=record.id)
+
+    return MemoryResponse(
+        session_token=session_token,
+        stage=record.stage,
+        summary=payload.summary,
+    )
+
+
+@router.post("/memory/recall", response_model=MemoryResponse)
+def recall_memory(
+    payload: MemoryRecall,
+    request: Request,
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(verify_service_api_key),
+):
+    enforce_and_meter(db, auth.tenant_id)
+    user = get_user(db, auth.tenant_id, payload.user_token)
+    record = get_memory(db, auth.tenant_id, user, payload.session_token)
+
+    try:
+        summary = decrypt_text(
+            record.encrypted_content,
+            tenant_id=auth.tenant_id,
+            user_id=user.id,
+            key_version=record.key_version,
+        )
+    except Exception:
+        _audit(db, auth, request, action="memory.recall", outcome="decrypt_error", resource_id=record.id)
+        raise HTTPException(status_code=500, detail="Unable to decrypt memory") from None
+
+    _audit(db, auth, request, action="memory.recall", outcome="success", resource_id=record.id)
+
+    return MemoryResponse(
+        session_token=payload.session_token,
+        stage=record.stage,
+        summary=summary,
+    )
+
+
+@router.put("/memory/update", response_model=MemoryResponse)
+def update_memory(
+    payload: MemoryUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(verify_service_api_key),
+):
+    if payload.summary is None and payload.stage is None:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+
+    enforce_and_meter(db, auth.tenant_id)
+    user = get_user(db, auth.tenant_id, payload.user_token)
+    record = get_memory(db, auth.tenant_id, user, payload.session_token)
+
+    if payload.summary is not None:
+        encrypted, key_version = encrypt_text(
+            payload.summary,
+            tenant_id=auth.tenant_id,
+            user_id=user.id,
+        )
+        record.encrypted_content = encrypted
+        record.key_version = key_version
+    if payload.stage is not None:
+        record.stage = payload.stage
+
+    db.commit()
+    db.refresh(record)
+
+    summary = decrypt_text(
+        record.encrypted_content,
+        tenant_id=auth.tenant_id,
+        user_id=user.id,
+        key_version=record.key_version,
+    )
+    _audit(db, auth, request, action="memory.update", outcome="success", resource_id=record.id)
+
+    return MemoryResponse(
+        session_token=payload.session_token,
+        stage=record.stage,
+        summary=summary,
+    )
+
+
+@router.post("/memory/delete", response_model=MemoryDeleteResponse)
+def delete_memory(
+    payload: MemoryDelete,
+    request: Request,
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(verify_service_api_key),
+):
+    user = get_user(db, auth.tenant_id, payload.user_token)
+    record = get_memory(db, auth.tenant_id, user, payload.session_token)
+    record_id = record.id
+    db.delete(record)
+    db.commit()
+
+    _audit(db, auth, request, action="memory.delete", outcome="success", resource_id=record_id)
+    return MemoryDeleteResponse(deleted=True, session_token=payload.session_token)
+
+
+@router.post("/memory/list", response_model=MemoryListResponse)
+def list_memory_sessions(
+    payload: MemoryListRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(verify_service_api_key),
+):
+    """List session metadata only — never returns decrypted summaries."""
+    user = get_user(db, auth.tenant_id, payload.user_token)
+    records = (
+        db.query(MemoryRecord)
+        .filter(
+            MemoryRecord.tenant_id == auth.tenant_id,
+            MemoryRecord.user_id == user.id,
+        )
+        .order_by(MemoryRecord.updated_at.desc())
+        .limit(200)
+        .all()
+    )
+
+    _audit(db, auth, request, action="memory.list", outcome="success", resource_id=user.id)
+
+    return MemoryListResponse(
+        sessions=[
+            MemorySessionMeta(
+                memory_id=record.id,
+                stage=record.stage,
+                created_at=record.created_at.isoformat() + "Z",
+                updated_at=record.updated_at.isoformat() + "Z",
+            )
+            for record in records
+        ]
+    )
+
+--- app/models.py ---
+import uuid
+from datetime import datetime, timezone
+
+from sqlalchemy import (
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    Index,
+)
+from sqlalchemy.orm import relationship
+
+from app.database import Base
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+class Tenant(Base):
+    __tablename__ = "tenants"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = Column(String(200), nullable=False)
+    slug = Column(String(100), unique=True, nullable=False, index=True)
+    status = Column(String(32), nullable=False, default="active")
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+
+    users = relationship("User", back_populates="tenant", cascade="all, delete-orphan")
+    api_keys = relationship("ServiceApiKey", back_populates="tenant", cascade="all, delete-orphan")
+    memories = relationship("MemoryRecord", back_populates="tenant", cascade="all, delete-orphan")
+    audit_events = relationship("AuditEvent", back_populates="tenant", cascade="all, delete-orphan")
+    subscription = relationship(
+        "TenantSubscription",
+        back_populates="tenant",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+    usage_counters = relationship(
+        "UsageCounter",
+        back_populates="tenant",
+        cascade="all, delete-orphan",
+    )
+
+
+class ServiceApiKey(Base):
+    __tablename__ = "service_api_keys"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(
+        String,
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name = Column(String(200), nullable=False)
+    key_prefix = Column(String(16), nullable=False, index=True)
+    key_hash = Column(String(64), unique=True, nullable=False, index=True)
+    status = Column(String(32), nullable=False, default="active")
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+    revoked_at = Column(DateTime, nullable=True)
+    last_used_at = Column(DateTime, nullable=True)
+
+    tenant = relationship("Tenant", back_populates="api_keys")
+
+
+class User(Base):
+    __tablename__ = "users"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "user_token_hash", name="uq_users_tenant_token_hash"),
+    )
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(
+        String,
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_token_hash = Column(String(64), nullable=False, index=True)
+    full_name = Column(String(200), nullable=True)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+
+    tenant = relationship("Tenant", back_populates="users")
+    memories = relationship("MemoryRecord", back_populates="user", cascade="all, delete-orphan")
+
+
+class MemoryRecord(Base):
+    __tablename__ = "memory_records"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "user_id",
+            "session_token_hash",
+            name="uq_memory_tenant_user_session",
+        ),
+        Index("ix_memory_tenant_user", "tenant_id", "user_id"),
+    )
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(
+        String,
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    session_token_hash = Column(String(64), nullable=False, index=True)
+    stage = Column(String(100), nullable=True)
+    encrypted_content = Column(Text, nullable=False)
+    key_version = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+    tenant = relationship("Tenant", back_populates="memories")
+    user = relationship("User", back_populates="memories")
+
+
+class AuditEvent(Base):
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        Index("ix_audit_tenant_created", "tenant_id", "created_at"),
+    )
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(
+        String,
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    actor_type = Column(String(32), nullable=False)
+    actor_id = Column(String(64), nullable=True)
+    action = Column(String(64), nullable=False)
+    resource_type = Column(String(64), nullable=True)
+    resource_id = Column(String(64), nullable=True)
+    outcome = Column(String(32), nullable=False)
+    request_id = Column(String(64), nullable=True)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+
+    tenant = relationship("Tenant", back_populates="audit_events")
+
+
+class Plan(Base):
+    """Sellable commercial plan with hard monthly quotas."""
+
+    __tablename__ = "plans"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    code = Column(String(64), unique=True, nullable=False, index=True)
+    name = Column(String(120), nullable=False)
+    monthly_price_cents = Column(Integer, nullable=False, default=0)
+    currency = Column(String(8), nullable=False, default="usd")
+    monthly_ops_limit = Column(Integer, nullable=False)
+    max_memories = Column(Integer, nullable=False)
+    stripe_price_id = Column(String(120), nullable=True)
+    is_public = Column(Integer, nullable=False, default=1)  # 1/0 for SQLite-friendly bool
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+
+    subscriptions = relationship("TenantSubscription", back_populates="plan")
+
+
+class TenantSubscription(Base):
+    __tablename__ = "tenant_subscriptions"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(
+        String,
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    plan_id = Column(String, ForeignKey("plans.id"), nullable=False, index=True)
+    status = Column(String(32), nullable=False, default="active")  # active|past_due|canceled
+    stripe_customer_id = Column(String(120), nullable=True, index=True)
+    stripe_subscription_id = Column(String(120), nullable=True, index=True)
+    current_period_start = Column(DateTime, nullable=False, default=utc_now)
+    current_period_end = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+    tenant = relationship("Tenant", back_populates="subscription")
+    plan = relationship("Plan", back_populates="subscriptions")
+
+
+class UsageCounter(Base):
+    """Monthly usage bucket per tenant. Period key format: YYYY-MM (UTC)."""
+
+    __tablename__ = "usage_counters"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "period_key", name="uq_usage_tenant_period"),
+    )
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(
+        String,
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    period_key = Column(String(7), nullable=False, index=True)
+    ops_count = Column(Integer, nullable=False, default=0)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+    tenant = relationship("Tenant", back_populates="usage_counters")
+
+--- app/rate_limit.py ---
+import os
+import threading
+import time
+from collections import defaultdict, deque
+from dataclasses import dataclass
+from typing import Deque, Dict
+
+from fastapi import HTTPException
+
+from app.config import get_settings
+
+
+@dataclass(frozen=True)
+class RateLimitConfig:
+    requests: int
+    window_seconds: int
+
+
+class InMemoryRateLimiter:
+    """Process-local sliding-window limiter.
+
+    Isolated behind a small interface so it can later be replaced by Redis
+    without changing the public API contract.
+    """
+
+    def __init__(self, config: RateLimitConfig):
+        self.config = config
+        self._events: Dict[str, Deque[float]] = defaultdict(deque)
+        self._lock = threading.Lock()
+
+    def check(self, identity: str) -> None:
+        now = time.monotonic()
+        cutoff = now - self.config.window_seconds
+
+        with self._lock:
+            bucket = self._events[identity]
+            while bucket and bucket[0] <= cutoff:
+                bucket.popleft()
+
+            if len(bucket) >= self.config.requests:
+                retry_after = max(1, int(self.config.window_seconds - (now - bucket[0])))
+                raise HTTPException(
+                    status_code=429,
+                    detail="Rate limit exceeded",
+                    headers={"Retry-After": str(retry_after)},
+                )
+
+            bucket.append(now)
+
+    def reset(self) -> None:
+        with self._lock:
+            self._events.clear()
+
+
+def get_rate_limit_config() -> RateLimitConfig:
+    settings = get_settings()
+    return RateLimitConfig(
+        requests=settings.rate_limit.requests,
+        window_seconds=settings.rate_limit.window_seconds,
+    )
+
+
+def build_rate_limiter() -> InMemoryRateLimiter:
+    return InMemoryRateLimiter(get_rate_limit_config())
+
+
+# Constructed at import once settings env is available.
+rate_limiter = build_rate_limiter()
+
+--- app/billing.py ---
+"""Commercial billing: plans, quotas, usage metering, Stripe checkout."""
+
+from __future__ import annotations
+
+from calendar import monthrange
+from datetime import datetime
+from typing import Optional, Tuple
+
+from fastapi import HTTPException
+from sqlalchemy.orm import Session
+
+from app.config import get_settings
+from app.models import MemoryRecord, Plan, TenantSubscription, UsageCounter, utc_now
+
+# Default catalog — seeded on first use. Prices are USD monthly.
+DEFAULT_PLANS = (
+    {
+        "code": "free",
+        "name": "Free",
+        "monthly_price_cents": 0,
+        "monthly_ops_limit": 1_000,
+        "max_memories": 100,
+        "is_public": 1,
+    },
+    {
+        "code": "starter",
+        "name": "Starter",
+        "monthly_price_cents": 4900,
+        "monthly_ops_limit": 50_000,
+        "max_memories": 10_000,
+        "is_public": 1,
+    },
+    {
+        "code": "growth",
+        "name": "Growth",
+        "monthly_price_cents": 19900,
+        "monthly_ops_limit": 500_000,
+        "max_memories": 100_000,
+        "is_public": 1,
+    },
+)
+
+
+def current_period_key(now: Optional[datetime] = None) -> str:
+    stamp = now or utc_now()
+    return f"{stamp.year:04d}-{stamp.month:02d}"
+
+
+def period_bounds(period_key: str) -> Tuple[datetime, datetime]:
+    year_s, month_s = period_key.split("-")
+    year, month = int(year_s), int(month_s)
+    start = datetime(year, month, 1)
+    last_day = monthrange(year, month)[1]
+    end = datetime(year, month, last_day, 23, 59, 59)
+    return start, end
+
+
+def ensure_plans(db: Session) -> None:
+    settings = get_settings()
+    for spec in DEFAULT_PLANS:
+        existing = db.query(Plan).filter(Plan.code == spec["code"]).first()
+        stripe_price = None
+        if spec["code"] == "starter":
+            stripe_price = settings.stripe_price_starter or None
+        elif spec["code"] == "growth":
+            stripe_price = settings.stripe_price_growth or None
+
+        if existing:
+            if stripe_price and existing.stripe_price_id != stripe_price:
+                existing.stripe_price_id = stripe_price
+                db.add(existing)
+            continue
+
+        db.add(
+            Plan(
+                code=spec["code"],
+                name=spec["name"],
+                monthly_price_cents=spec["monthly_price_cents"],
+                monthly_ops_limit=spec["monthly_ops_limit"],
+                max_memories=spec["max_memories"],
+                stripe_price_id=stripe_price,
+                is_public=spec["is_public"],
+            )
+        )
+    db.commit()
+
+
+def get_plan_by_code(db: Session, code: str) -> Plan:
+    ensure_plans(db)
+    plan = db.query(Plan).filter(Plan.code == code).first()
+    if not plan:
+        raise HTTPException(status_code=404, detail=f"Unknown plan: {code}")
+    return plan
+
+
+def ensure_subscription(db: Session, tenant_id: str, plan_code: str = "free") -> TenantSubscription:
+    ensure_plans(db)
+    sub = (
+        db.query(TenantSubscription)
+        .filter(TenantSubscription.tenant_id == tenant_id)
+        .first()
+    )
+    if sub:
+        return sub
+
+    plan = get_plan_by_code(db, plan_code)
+    period_key = current_period_key()
+    start, end = period_bounds(period_key)
+    sub = TenantSubscription(
+        tenant_id=tenant_id,
+        plan_id=plan.id,
+        status="active",
+        current_period_start=start,
+        current_period_end=end,
+    )
+    db.add(sub)
+    db.commit()
+    db.refresh(sub)
+    return sub
+
+
+def assign_plan(
+    db: Session,
+    tenant_id: str,
+    plan_code: str,
+    *,
+    stripe_customer_id: Optional[str] = None,
+    stripe_subscription_id: Optional[str] = None,
+    status: str = "active",
+) -> TenantSubscription:
+    plan = get_plan_by_code(db, plan_code)
+    sub = ensure_subscription(db, tenant_id)
+    sub.plan_id = plan.id
+    sub.status = status
+    if stripe_customer_id is not None:
+        sub.stripe_customer_id = stripe_customer_id
+    if stripe_subscription_id is not None:
+        sub.stripe_subscription_id = stripe_subscription_id
+    period_key = current_period_key()
+    start, end = period_bounds(period_key)
+    sub.current_period_start = start
+    sub.current_period_end = end
+    sub.updated_at = utc_now()
+    db.add(sub)
+    db.commit()
+    db.refresh(sub)
+    return sub
+
+
+def _get_usage(db: Session, tenant_id: str, period_key: str) -> UsageCounter:
+    row = (
+        db.query(UsageCounter)
+        .filter(
+            UsageCounter.tenant_id == tenant_id,
+            UsageCounter.period_key == period_key,
+        )
+        .first()
+    )
+    if row:
+        return row
+    row = UsageCounter(tenant_id=tenant_id, period_key=period_key, ops_count=0)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def get_billing_snapshot(db: Session, tenant_id: str) -> dict:
+    sub = ensure_subscription(db, tenant_id)
+    plan = db.query(Plan).filter(Plan.id == sub.plan_id).one()
+    period_key = current_period_key()
+    usage = _get_usage(db, tenant_id, period_key)
+    memory_count = (
+        db.query(MemoryRecord)
+        .filter(MemoryRecord.tenant_id == tenant_id)
+        .count()
+    )
+    ops_remaining = max(0, plan.monthly_ops_limit - usage.ops_count)
+    memories_remaining = max(0, plan.max_memories - memory_count)
+    return {
+        "tenant_id": tenant_id,
+        "plan_code": plan.code,
+        "plan_name": plan.name,
+        "status": sub.status,
+        "monthly_price_cents": plan.monthly_price_cents,
+        "currency": plan.currency,
+        "period_key": period_key,
+        "ops_used": usage.ops_count,
+        "ops_limit": plan.monthly_ops_limit,
+        "ops_remaining": ops_remaining,
+        "memories_used": memory_count,
+        "memories_limit": plan.max_memories,
+        "memories_remaining": memories_remaining,
+        "upgrade_required": ops_remaining == 0 or memories_remaining == 0,
+    }
+
+
+def enforce_and_meter(db: Session, tenant_id: str, *, creating_memory: bool = False) -> None:
+    """Hard-stop billable API calls when the tenant exceeds plan quotas.
+
+    Raises HTTP 402 so clients know this is a payment/plan problem, not auth.
+    """
+    sub = ensure_subscription(db, tenant_id)
+    if sub.status not in {"active", "trialing"}:
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "error": "subscription_inactive",
+                "message": "Subscription is not active. Update billing to continue.",
+                "status": sub.status,
+            },
+        )
+
+    plan = db.query(Plan).filter(Plan.id == sub.plan_id).one()
+    period_key = current_period_key()
+    usage = _get_usage(db, tenant_id, period_key)
+
+    if usage.ops_count >= plan.monthly_ops_limit:
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "error": "ops_quota_exceeded",
+                "message": "Monthly API operation quota exceeded. Upgrade your plan.",
+                "plan_code": plan.code,
+                "ops_limit": plan.monthly_ops_limit,
+                "ops_used": usage.ops_count,
+                "upgrade": "/v1/billing/checkout",
+            },
+        )
+
+    if creating_memory:
+        memory_count = (
+            db.query(MemoryRecord)
+            .filter(MemoryRecord.tenant_id == tenant_id)
+            .count()
+        )
+        if memory_count >= plan.max_memories:
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "error": "memory_quota_exceeded",
+                    "message": "Stored memory quota exceeded. Upgrade your plan.",
+                    "plan_code": plan.code,
+                    "memories_limit": plan.max_memories,
+                    "memories_used": memory_count,
+                    "upgrade": "/v1/billing/checkout",
+                },
+            )
+
+    usage.ops_count += 1
+    usage.updated_at = utc_now()
+    db.add(usage)
+    db.commit()
