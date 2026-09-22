@@ -49,12 +49,15 @@ app = FastAPI(
     description="Multi-tenant secure memory persistence layer for AI applications.",
     lifespan=lifespan,
 )
+_settings = get_settings()
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(RequestSizeLimitMiddleware)
+# Explicit frontend origins only — never allow_origins=["*"] with credentials.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=list(_settings.cors_origins),
+    allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "OPTIONS"],
     allow_headers=["*"],
 )

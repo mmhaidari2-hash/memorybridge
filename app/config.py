@@ -9,6 +9,7 @@ import os
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Dict, FrozenSet, Tuple
+from urllib.parse import urlparse
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,7 @@ class Settings:
     billing_success_url: str | None
     billing_cancel_url: str | None
     redis_url: str | None
+    cors_origins: Tuple[str, ...]
 
 
 def _require(name: str) -> str:
@@ -190,8 +192,51 @@ def _parse_max_request_bytes() -> int:
     return value
 
 
+def _parse_cors_origins(public_base_url: str) -> Tuple[str, ...]:
+    """
+    Explicit browser origins only. Never allow "*" — credentials-safe CORS
+    requires a concrete allowlist (frontend production domain + local Vite).
+    """
+    raw = os.getenv("CORS_ORIGINS", "").strip()
+    origins: list[str] = []
+    if raw:
+        for part in raw.split(","):
+            origin = part.strip().rstrip("/")
+            if not origin:
+                continue
+            if origin == "*":
+                raise RuntimeError(
+                    "CORS_ORIGINS cannot be '*'. Set explicit frontend origins "
+                    "(e.g. https://your-frontend.example,http://localhost:5173)."
+                )
+            origins.append(origin)
+        if not origins:
+            raise RuntimeError("CORS_ORIGINS is set but contains no valid origins")
+        # Preserve order, drop duplicates.
+        return tuple(dict.fromkeys(origins))
+
+    parsed = urlparse(public_base_url)
+    defaults: list[str] = []
+    if parsed.scheme and parsed.netloc:
+        defaults.append(f"{parsed.scheme}://{parsed.netloc}")
+    defaults.extend(
+        [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:4173",
+            "http://127.0.0.1:4173",
+            "http://localhost:8000",
+            "http://127.0.0.1:8000",
+        ]
+    )
+    return tuple(dict.fromkeys(defaults))
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
+    public_base_url = (
+        os.getenv("PUBLIC_BASE_URL", "http://localhost:8000").strip() or "http://localhost:8000"
+    ).rstrip("/")
     return Settings(
         database_url=_parse_database_url(),
         keyring=_parse_keyring(),
@@ -207,12 +252,11 @@ def get_settings() -> Settings:
         stripe_webhook_secret=os.getenv("STRIPE_WEBHOOK_SECRET", "").strip() or None,
         stripe_price_starter=os.getenv("STRIPE_PRICE_STARTER", "").strip() or None,
         stripe_price_growth=os.getenv("STRIPE_PRICE_GROWTH", "").strip() or None,
-        public_base_url=(os.getenv("PUBLIC_BASE_URL", "http://localhost:8000").strip() or "http://localhost:8000").rstrip(
-            "/"
-        ),
+        public_base_url=public_base_url,
         billing_success_url=os.getenv("BILLING_SUCCESS_URL", "").strip() or None,
         billing_cancel_url=os.getenv("BILLING_CANCEL_URL", "").strip() or None,
         redis_url=os.getenv("REDIS_URL", "").strip() or None,
+        cors_origins=_parse_cors_origins(public_base_url),
     )
 
 
