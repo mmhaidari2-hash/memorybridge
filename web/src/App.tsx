@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
+import { apiUrl } from "./api";
 
 type PlanId = "free" | "starter" | "growth";
 
@@ -114,7 +115,7 @@ function Landing() {
   const [result, setResult] = useState<SignupResult | null>(null);
 
   useEffect(() => {
-    fetch("/v1/billing/config")
+    fetch(apiUrl("/v1/billing/config"))
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (data?.stripe_enabled) setStripeEnabled(true);
@@ -134,7 +135,7 @@ function Landing() {
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch("/v1/billing/signup", {
+      const response = await fetch(apiUrl("/v1/billing/signup"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
